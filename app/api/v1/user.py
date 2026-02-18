@@ -1,7 +1,9 @@
 from fastapi import Depends
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Security
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_user
 
 from app.schemas import UserCreate, UserRead
 from app.models import User as UserModel
@@ -10,6 +12,16 @@ from app.core.security import hash_password
 
 
 router = APIRouter(tags=["users"])
+
+@router.get(
+    "/me",
+    response_model=UserRead,
+    summary="Get current user"
+)
+async def read_own_profile(
+        current_user: UserModel = Security(get_current_user, scopes=["me"]),
+):
+    return UserRead.model_validate(current_user)
 
 @router.post(
     "/",
