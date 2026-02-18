@@ -3,6 +3,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.models.associations import chat_members
+from app.models.chat import Chat
 
 class User(Base):
     __tablename__ = "users"

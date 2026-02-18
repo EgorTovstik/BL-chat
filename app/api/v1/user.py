@@ -47,11 +47,13 @@ async def create_user(
     # Хэшируем пароль
     hashed_password = hash_password(user_in.password)
 
+    username = user_in.email.partition("@")[0] #Определим username из почты
     # Создание ORM объекта
     user = UserModel(
         full_name=user_in.full_name,
         email=user_in.email,
-        password=hashed_password
+        password=hashed_password,
+        username=username,
     )
 
     db.add(user)
