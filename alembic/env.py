@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # Импортируем Base и настройки
 from app.core.config import settings
 from app.models.base import Base
-from app.models import user  # Импортируем модели
+from app.models import user, chat, message  # Импортируем модели
+from app.models.associations import chat_members
 
 # Alembic Config object
 config = context.config
