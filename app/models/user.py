@@ -21,4 +21,10 @@ class User(Base):
         secondary=chat_members,
         back_populates="participants"
     )
+
+    messages = relationship(
+        "Message",
+        back_populates='sender',
+        cascade='all, delete-orphan',
+    )
     

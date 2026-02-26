@@ -17,3 +17,9 @@ class Chat(Base):
         secondary=chat_members,
         back_populates="chats"
     )
+
+    messages = relationship(
+        'Message',
+        back_populates='chat',
+        cascade='all, delete-orphan',
+    )

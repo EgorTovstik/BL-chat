@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.schemas.user import UserRead
 
 class ChatBase(BaseModel):
-    name: str
+    name: Optional[str] = None
     type: Literal["personal", "group"]
 
 class ChatCreate(ChatBase):
