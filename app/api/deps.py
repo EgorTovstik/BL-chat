@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status, Security
+from fastapi import Depends, HTTPException, status, Security, WebSocket
 from fastapi.security import OAuth2PasswordBearer, SecurityScopes
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -52,4 +52,37 @@ async def get_current_user(
     user = res.scalar_one_or_none()
     if user is None:
         raise credentials_exception
+    return user
+
+async def get_current_user_ws(
+    websocket: WebSocket,
+    security_scopes: SecurityScopes,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = payload.get("sub")
+        token_scopes: List[str] = payload.get("scopes", [])
+        if user_id is None:
+            raise JWTError()
+    except JWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
+    for scope in security_scopes.scopes:
+        if scope not in token_scopes:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        
+    res = await db.execute(select(User).where(User.id == int(user_id)))
+    user = res.scalar_one_or_none()
+
+    if user is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     return user

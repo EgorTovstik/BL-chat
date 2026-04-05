@@ -9,8 +9,9 @@ from app.schemas import ChatRead, ChatCreate, MessageRead
 from app.models import User as AuthUser, Chat, Message, chat_members
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.services import ChatService
 
-router = APIRouter(tags=["/chats"])
+router = APIRouter(tags=["chats"])
 
 @router.post(
     "/",
@@ -122,16 +123,17 @@ async def get_chat(
     current_user: AuthUser = Security(get_current_user, scopes=["chats:read"])
 ):
     try:
-        query = (
-            select(Chat)
-            .where(Chat.id == chat_id)
-            .join(Chat.participants)
-            .where(AuthUser.id == current_user.id)
-            .options(selectinload(Chat.participants))
-        )
+        chat = await ChatService.get_chat(chat_id, db, user_id=current_user.id)
+        # query = (
+        #     select(Chat)
+        #     .where(Chat.id == chat_id)
+        #     .join(Chat.participants)
+        #     .where(AuthUser.id == current_user.id)
+        #     .options(selectinload(Chat.participants))
+        # )
 
-        result = await db.execute(query)
-        chat = result.scalars().first()
+        # result = await db.execute(query)
+        # chat = result.scalars().first()
     except ValueError as e:
         detail = str(e)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
