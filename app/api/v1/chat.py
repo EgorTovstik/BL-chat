@@ -5,12 +5,13 @@ from sqlalchemy import select, and_, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.schemas import ChatRead, ChatCreate
-from app.models import User as AuthUser, Chat, chat_members
+from app.schemas import ChatRead, ChatCreate, MessageRead
+from app.models import User as AuthUser, Chat, Message, chat_members
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.services import ChatService
 
-router = APIRouter(tags=["/chats"])
+router = APIRouter(tags=["chats"])
 
 @router.post(
     "/",
@@ -122,16 +123,17 @@ async def get_chat(
     current_user: AuthUser = Security(get_current_user, scopes=["chats:read"])
 ):
     try:
-        query = (
-            select(Chat)
-            .where(Chat.id == chat_id)
-            .join(Chat.participants)
-            .where(AuthUser.id == current_user.id)
-            .options(selectinload(Chat.participants))
-        )
+        chat = await ChatService.get_chat(chat_id, db, user_id=current_user.id)
+        # query = (
+        #     select(Chat)
+        #     .where(Chat.id == chat_id)
+        #     .join(Chat.participants)
+        #     .where(AuthUser.id == current_user.id)
+        #     .options(selectinload(Chat.participants))
+        # )
 
-        result = await db.execute(query)
-        chat = result.scalars().first()
+        # result = await db.execute(query)
+        # chat = result.scalars().first()
     except ValueError as e:
         detail = str(e)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -144,3 +146,31 @@ async def get_chat(
         )
 
     return ChatRead.model_validate(chat)
+
+@router.get(
+    "/{chat_id}/messages",
+    response_model=List[MessageRead],
+    summary="Message history for chat"
+)
+async def get_chat_history(
+    chat_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Security(get_current_user, scopes=["chats:read"])
+):
+    try:
+        query = (
+            select(Message)
+            .where(Message.chat_id == chat_id)
+            .order_by(Message.timestamp.desc())
+            .offset(skip)
+            .limit(limit)
+            .options(selectinload(Message.sender)) #подгрузим автора для распределения на фронте
+        )
+
+        result = await db.execute(query)
+        msgs = result.scalars().all()
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return msgs
