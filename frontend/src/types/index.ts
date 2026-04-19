@@ -28,3 +28,11 @@ export interface UserUpdate {
   email?: string;
   password?: string;
 }
+
+// Базовые поля чата
+export interface Chat {
+    id: number;
+    name: string | null;
+    type: 'personal' | 'group';
+    participants: UserRead[];
+}

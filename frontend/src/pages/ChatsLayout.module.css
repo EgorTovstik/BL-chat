@@ -1,0 +1,79 @@
+/* src/pages/ChatsLayout.module.css */
+
+/* Основной контейнер */
+.layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #fff;
+  overflow: hidden;
+}
+
+/* Панель списка чатов */
+.sidebarPanel {
+  display: flex;
+  flex-direction: column;
+  background-color: #fff;
+  border-right: 1px solid #dfe1e5;
+  overflow: hidden;
+}
+
+/* 🔥 Разделитель (невидимый, но с зоной захвата) */
+.resizeHandle {
+  width: 1px; /* Визуальная линия */
+  background-color: #dfe1e5;
+  position: relative;
+  cursor: col-resize;
+  transition: background-color 0.2s, width 0.2s;
+  /* Увеличиваем зону захвата для удобства */
+  &:hover,
+  &[data-resize-handle-active] {
+    background-color: #3390ec;
+    width: 3px;
+  }
+}
+
+/* Видимая "ручка" по центру разделителя */
+.resizeHandleInner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 40px;
+  background-color: #cbd5e1;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #707579;
+  font-size: 10px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  user-select: none;
+  pointer-events: none; /* Чтобы не мешал событиям разделителя */
+}
+
+.resizeHandle:hover .resizeHandleInner,
+.resizeHandle[data-resize-handle-active] .resizeHandleInner {
+  opacity: 1;
+}
+
+/* Панель чата */
+.mainPanel {
+  display: flex;
+  flex-direction: column;
+  background-color: #e6ebee;
+  overflow: hidden;
+  min-width: 0; /* Важно для работы скролла внутри ChatRoom */
+}
+
+/* Состояние свёрнутой панели (опционально) */
+.sidebarPanel[data-collapsed] {
+  background-color: #f8f9fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

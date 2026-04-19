@@ -1,0 +1,161 @@
+/* src/pages/ChatList.module.css */
+
+/* 🔥 Контейнер только для списка (занимает 100% высоты родителя) */
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;  /* ← Важно: не 100vh! */
+  background-color: #fff;
+  border-right: 1px solid #dfe1e5; /* ← Граница справа, отделяющая список от чата */
+}
+
+/* Шапка с поиском */
+.sidebarHeader {
+  padding: 8px 12px;
+  border-bottom: 1px solid #dfe1e5;
+  background-color: #fff;
+  flex-shrink: 0; /* Чтобы не сжималась при скролле */
+}
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  background-color: #f4f4f5;
+  border-radius: 22px;
+  padding: 8px 16px;
+  gap: 8px;
+}
+
+.searchIcon {
+  font-size: 14px;
+  color: #707579;
+}
+
+.searchInput {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+  width: 100%;
+  color: #000;
+}
+
+/* Скроллируемый список чатов */
+.chatList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+/* Карточка чата */
+.chatItem {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+  border-bottom: 1px solid transparent;
+}
+
+.chatItem:hover {
+  background-color: #f4f4f5;
+}
+
+.chatItem.active {
+  background-color: #3390ec15;
+}
+
+.chatItem.active:hover {
+  background-color: #3390ec15;
+}
+
+/* Аватар */
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: #3390ec;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 500;
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+
+/* Контент карточки */
+.chatContent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flexDirection: column;
+  gap: 2px;
+}
+
+.chatHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.chatTitle {
+  font-size: 15px;
+  font-weight: 500;
+  color: #000;
+}
+
+.chatTime {
+  font-size: 12px;
+  color: #707579;
+  flex-shrink: 0;
+}
+
+.chatPreview {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.lastMessage {
+  font-size: 14px;
+  color: #707579;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.unreadBadge {
+  background-color: #3390ec;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+/* Пустой список / Загрузка / Ошибка */
+.center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%; /* ← Занимает всю доступную высоту */
+  font-size: 14px;
+  color: #707579;
+}
+
+.empty {
+  text-align: center;
+  color: #707579;
+  padding: 40px 20px;
+  font-size: 14px;
+}
