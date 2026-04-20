@@ -15,12 +15,13 @@ from app.core.database import get_db
 
 router = APIRouter(tags=["/messages"])
 
+# Уже не используется
 @router.post(
     "/{chat_id}/messages",
     response_model=MessageRead,
     summary="Send a new message to chat"
 )
-async def create_meassage(
+async def create_message(
     chat_id: int,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),

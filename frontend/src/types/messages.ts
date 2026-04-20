@@ -8,7 +8,10 @@ export interface Message {
     text: string;
     timestamp: string; // datetime → ISO-строка в JSON
     read: boolean;
-    sender: UserRead;
+    sender: {           // 🔥 Добавь это, если бэк возвращает
+        id: number;
+        full_name: string;
+    };
 }
 
 // То, что мы отправляем через WebSocket

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { chatAPI } from '../api/chat';
 import { authAPI } from '../api/auth';
+import {getChatTitle} from "../utils/chat";
 import type { Chat } from '../types';
 import styles from './ChatList.module.css';
 
@@ -40,18 +41,6 @@ export function ChatList() {
     loadData();
   }, [navigate]);
 
-  const getChatTitle = (chat: Chat, myId: number | null): string => {
-    if (chat.name) return chat.name;
-    
-    if (chat.type === 'personal' && chat.participants.length > 0 && myId !== null) {
-      const interlocutor = chat.participants.find(p => p.id !== myId);
-      if (interlocutor) {
-        return interlocutor.full_name;
-      }
-    }
-    return 'Без названия';
-  };
-
   if (loading) return <div className={styles.center}>Загрузка...</div>;
   if (error) return (
     <div className={styles.center}>
@@ -85,7 +74,7 @@ export function ChatList() {
             const interlocutor = chat.type === 'personal' 
               ? chat.participants.find(p => p.id !== currentUserId)
               : null;
-            const displayName = chat.name || interlocutor?.full_name || 'Без названия';
+            const displayName = getChatTitle(chat, currentUserId);
             const lastMessage = "Нажмите, чтобы открыть чат";
             
             return (

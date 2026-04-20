@@ -7,4 +7,9 @@ export const chatAPI = {
         const response = await apiClient.get<Chat[]>('/chat/');
         return response.data;
     },
+
+    getChat: async (chat_id: number): Promise<Chat> => {
+        const response = await apiClient.get<Chat>(`/chat/${chat_id}`)
+        return response.data;
+    },
 };
