@@ -88,29 +88,65 @@ async def create_chat(
     return ChatRead.model_validate(chat)
 
 @router.get(
-    "/"
-    ,response_model=List[ChatRead]
-    ,summary="List of current user`s chats"
+    "/",
+    response_model=List[ChatRead],
+    summary="List of current user's chats with last message"
 )
 async def list_chats(
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Security(get_current_user, scopes=["chats:read"])
 ):
-    try:
-        query = (
-            select(Chat)
-            .join(Chat.participants)
-            .where(AuthUser.id == current_user.id)
-            .options(selectinload(Chat.participants))
-        )
-        result = await db.execute(query)
-        chats = result.scalars().unique().all()
+    # 1️⃣ Загружаем чаты + участников
+    chats_query = (
+        select(Chat)
+        .join(Chat.participants)
+        .where(AuthUser.id == current_user.id)
+        .options(selectinload(Chat.participants))
+        .order_by(Chat.id)
+    )
+    chats_result = await db.execute(chats_query)
+    chats = chats_result.scalars().unique().all()
 
-    except ValueError as e:
-        detail = str(e)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    
-    return [ChatRead.model_validate(chat) for chat in chats]
+    if not chats:
+        return []
+
+    chat_ids = [chat.id for chat in chats]
+
+    # 2️⃣ Загружаем ПОСЛЕДНИЕ сообщения для этих чатов (1 запрос)
+    # Сортируем по chat_id и timestamp DESC → первые в группе будут последними сообщениями
+    last_msg_query = (
+        select(Message)
+        .where(Message.chat_id.in_(chat_ids))
+        .order_by(Message.chat_id, Message.timestamp.desc())
+        .options(selectinload(Message.sender))  # 🔥 Важно для валидации MessageRead
+    )
+    msg_result = await db.execute(last_msg_query)
+    all_messages = msg_result.scalars().all()
+
+    # Сопоставляем последнее сообщение каждому чату (берём первое совпадение = самое новое)
+    last_messages_map = {}
+    for msg in all_messages:
+        if msg.chat_id not in last_messages_map:
+            last_messages_map[msg.chat_id] = msg
+
+    # 3️⃣ Сортируем чаты по времени последнего сообщения (на уровне объектов)
+    # Чаты без сообщений — в конец
+    chats.sort(
+        key=lambda c: last_messages_map.get(c.id).timestamp if last_messages_map.get(c.id) else datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True
+    )
+
+    # 4️⃣ Теперь собираем ответ (уже отсортированный)
+    response_data = []
+    for chat in chats:
+        # Валидируем чат через Pydantic
+        chat_dict = ChatRead.model_validate(chat).model_dump()
+        # Добавляем последнее сообщение (валидируем через Pydantic)
+        raw_msg = last_messages_map.get(chat.id)
+        chat_dict["last_message"] = MessageRead.model_validate(raw_msg) if raw_msg else None
+        response_data.append(chat_dict)
+
+    return response_data
 
 @router.get(
     "/{chat_id}"
@@ -163,7 +199,7 @@ async def get_chat_history(
         query = (
             select(Message)
             .where(Message.chat_id == chat_id)
-            .order_by(Message.timestamp.desc())
+            .order_by(Message.timestamp.asc())
             .offset(skip)
             .limit(limit)
             .options(selectinload(Message.sender)) #подгрузим автора для распределения на фронте

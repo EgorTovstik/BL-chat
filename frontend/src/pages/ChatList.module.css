@@ -1,0 +1,529 @@
+/* src/pages/ChatList.module.css */
+
+/* 🔥 Контейнер только для списка (занимает 100% высоты родителя) */
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;  /* ← Важно: не 100vh! */
+  background-color: #fff;
+  border-right: 1px solid #dfe1e5; /* ← Граница справа, отделяющая список от чата */
+}
+
+/* Шапка с поиском */
+.sidebarHeader {
+  padding: 8px 12px;
+  border-bottom: 1px solid #dfe1e5;
+  background-color: #fff;
+  flex-shrink: 0; /* Чтобы не сжималась при скролле */
+}
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  background-color: #f4f4f5;
+  border-radius: 22px;
+  padding: 8px 16px;
+  gap: 8px;
+}
+
+.searchIcon {
+  font-size: 14px;
+  color: #707579;
+}
+
+.searchInput {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+  width: 100%;
+  color: #000;
+}
+
+/* Скроллируемый список чатов */
+.chatList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+/* ===== Карточка чата ===== */
+.chatItem {
+  display: grid;
+  /* Фиксированная ширина аватара + гибкий контент */
+  grid-template-columns: 56px 1fr; 
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border-bottom: 1px solid transparent;
+}
+
+.chatItem:hover {
+  background-color: #f4f4f5;
+}
+
+.chatItem:active {
+  background-color: #e4e6eb;
+}
+
+/* Состояние активного чата (если добавишь логику выделения) */
+.chatItem.active {
+  background-color: #3390ec15;
+}
+
+/* ===== Активный чат (подсветка) ===== */
+.chatItem.active {
+  background-color: #3390ec15; /* Полупрозрачный синий, как в ТГ */
+  border-left: 3px solid #3390ec; /* Акцентная полоска слева */
+}
+
+.chatItem.active:hover {
+  background-color: #3390ec20; /* Чуть темнее при наведении */
+}
+
+/* 🔥 Дополнительно: сделаем текст активного чата чуть жирнее */
+.chatItem.active .chatTitle {
+  font-weight: 600;
+  color: #000;
+}
+
+.chatItem.active .lastMessage {
+  color: #555;
+  font-weight: 500;
+}
+
+.chatItem.active .chatTime {
+  color: #3390ec;
+  font-weight: 500;
+}
+
+/* ===== Аватар ===== */
+.avatarWrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3390ec, #2563eb);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 500;
+  flex-shrink: 0;
+  user-select: none;
+  /* Тень как в ТГ */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* ===== Контент (правая часть) ===== */
+.chatContent {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0; /* Важно для работы text-overflow: ellipsis */
+  gap: 2px;
+}
+
+/* Верхняя строка: Имя + Время */
+.chatHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline; /* Выравнивание по базовой линии текста */
+  gap: 8px;
+}
+
+.chatTitle {
+  font-size: 15px;
+  font-weight: 500;
+  color: #000;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chatTime {
+  font-size: 12px;
+  color: #707579;
+  flex-shrink: 0;
+  margin-left: 4px;
+  user-select: none;
+}
+
+/* Время для своих сообщений — цвет галочек (зеленоватый) */
+.chatTime.timeOwn {
+  color: #4ade80; 
+}
+
+/* Нижняя строка: Превью сообщения */
+.chatPreview {
+  display: flex;
+  align-items: center;
+  min-width: 0; /* Для обрезки текста */
+}
+
+.lastMessage {
+  font-size: 14px;
+  color: #707579;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+/* Своё сообщение — чуть светлее или с акцентом */
+.lastMessage.messageOwn {
+  color: #8894a6;
+  font-style: italic;
+}
+
+/* Анимация появления (опционально) */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chatItem {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.unreadBadge {
+  background-color: #3390ec;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+/* Пустой список / Загрузка / Ошибка */
+.center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%; /* ← Занимает всю доступную высоту */
+  font-size: 14px;
+  color: #707579;
+}
+
+.empty {
+  text-align: center;
+  color: #707579;
+  padding: 40px 20px;
+  font-size: 14px;
+}
+
+/* ===== Кнопка создания (в шапке) ===== */
+.createBtn {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #707579;
+  padding: 8px;
+  border-radius: 50%;
+  transition: background 0.15s, color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 8px;
+}
+
+.createBtn:hover {
+  background-color: #3390ec20;
+  color: #3390ec;
+}
+
+/* ===== Модальное окно ===== */
+.modalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.modalContent {
+  background: #fff;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 400px;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.modalHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #e4e6eb;
+}
+
+.modalHeader h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.modalClose {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #707579;
+  padding: 4px 8px;
+  border-radius: 50%;
+  transition: background 0.15s;
+}
+
+.modalClose:hover {
+  background-color: #e4e6eb;
+}
+
+.modalSearch {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e4e6eb;
+  position: relative;
+}
+
+.modalSearchInput {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #dfe1e5;
+  border-radius: 20px;
+  font-size: 14px;
+  outline: none;
+}
+
+.modalSearchInput:focus {
+  border-color: #3390ec;
+}
+
+.searching {
+  position: absolute;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+
+.groupNameInput {
+  width: calc(100% - 32px);
+  padding: 10px 14px;
+  border: 1px solid #dfe1e5;
+  border-radius: 8px;
+  font-size: 14px;
+  margin: 12px 16px;
+  outline: none;
+}
+
+.groupNameInput:focus {
+  border-color: #3390ec;
+}
+
+.searchResults {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+  max-height: 200px;
+}
+
+.searchResultItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.searchResultItem:hover {
+  background-color: #f4f4f5;
+}
+
+.userAvatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: #3390ec;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.noResults {
+  padding: 16px;
+  text-align: center;
+  color: #707579;
+  font-size: 14px;
+}
+
+.selectedUsers {
+  padding: 12px 16px;
+  border-top: 1px solid #e4e6eb;
+  border-bottom: 1px solid #e4e6eb;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  background-color: #f8f9fa;
+}
+
+.selectedUsers strong {
+  width: 100%;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: #707579;
+}
+
+.selectedChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background-color: #3390ec20;
+  color: #3390ec;
+  border-radius: 16px;
+  font-size: 12px;
+}
+
+.selectedChip button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  margin-left: 4px;
+  line-height: 1;
+}
+
+.selectedChip button:hover {
+  color: #dc2626;
+}
+
+.modalError {
+  padding: 0 16px;
+  color: #dc2626;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px;
+  border-top: 1px solid #e4e6eb;
+}
+
+.btnSecondary {
+  padding: 10px 20px;
+  background: none;
+  border: 1px solid #dfe1e5;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #000;
+  transition: background 0.15s;
+}
+
+.btnSecondary:hover {
+  background-color: #f4f4f5;
+}
+
+.btnPrimary {
+  padding: 10px 20px;
+  background-color: #3390ec;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background-color: #2563eb;
+}
+
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== Переключатель режима (Личный / Группа) ===== */
+.modeToggle {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e4e6eb;
+  background-color: #f8f9fa;
+}
+
+.toggleBtn {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #dfe1e5;
+  background-color: #fff;
+  color: #707579;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.toggleBtn:hover {
+  background-color: #e4e6eb;
+  border-color: #cbd5e1;
+}
+
+.toggleBtnActive {
+  background-color: #3390ec;
+  color: #fff;
+  border-color: #3390ec;
+  box-shadow: 0 2px 6px rgba(51, 144, 236, 0.25);
+}
+
+.toggleBtnActive:hover {
+  background-color: #2563eb;
+  border-color: #2563eb;
+}

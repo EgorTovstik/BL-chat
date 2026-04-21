@@ -11,6 +11,7 @@ env/
 # --- Environment variables ---
 .env
 .env.*
+.env.*.local
 
 # --- IDE ---
 .idea/
@@ -26,3 +27,11 @@ alembic/versions/__pycache__/
 # --- OS ---
 .DS_Store
 Thumbs.db
+.vscode
+
+# ==========================================
+# 1. ЗАВИСИМОСТИ (Самое важное!)
+# ==========================================
+node_modules/
+
+postgres.session.sql

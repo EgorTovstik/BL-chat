@@ -2,6 +2,7 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.schemas.user import UserRead
+from app.schemas.message import MessageRead
 
 class ChatBase(BaseModel):
     name: Optional[str] = None
@@ -22,5 +23,6 @@ class ChatCreate(ChatBase):
 class ChatRead(ChatBase):
     id: int
     participants: List[UserRead] = []
+    last_message: Optional[MessageRead] = None
 
     model_config = ConfigDict(from_attributes=True)

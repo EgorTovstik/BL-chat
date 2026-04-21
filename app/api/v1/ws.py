@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models import User as AuthUser
 from app.api.deps import get_current_user_ws
-from app.services import ChatService
-
+from app.services import ChatService, MessageService
+from app.schemas import MessageRead
 
 router = APIRouter(tags=["ws"])
 
@@ -83,6 +83,24 @@ async def ws_chat(
                 continue
 
             typ = evt.get("type")
+
+            if typ == "message":
+                msg, created = await MessageService.send_message(
+                    db,
+                    chat_id=chat_id,
+                    sender_id=user_id,
+                    text=evt["text"],
+                    client_msg_id=evt.get("client_msg_id"),
+                )
+
+                out = MessageRead.model_validate(msg).model_dump()
+                out["type"] = "message"
+                
+                if created:
+                    await manager.broadcast(chat_id, out)
+                else:
+                    payload = jsonable_encoder(out)
+                    await ws.send_json(payload) 
 
     except WebSocketDisconnect:
         manager.disconnect(chat_id, ws)
