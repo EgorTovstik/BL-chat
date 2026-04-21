@@ -1,6 +1,8 @@
+from typing import List
+
 from fastapi import Depends
-from fastapi import APIRouter, HTTPException, status, Security
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, status, Security, Query
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -22,6 +24,47 @@ async def read_own_profile(
         current_user: UserModel = Security(get_current_user, scopes=["me"]),
 ):
     return UserRead.model_validate(current_user)
+
+
+@router.get(
+    '/search',
+    response_model=List[UserRead],
+    summary="search user"
+)
+async def search_user(
+    user_name: str = Query(
+        ..., 
+        min_length=2, 
+        max_length=50, 
+        description="Поисковый запрос (мин. 2 символа)"
+    ),
+    limit: int = Query(
+        20, 
+        ge=1, 
+        le=50, 
+        description="Максимум результатов"
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserModel = Security(
+        get_current_user, 
+        scopes=["me", "chats:write"] 
+    )
+):
+    query = select(UserModel).where(
+        and_(
+            or_(
+                UserModel.full_name.ilike(f"%{user_name}%"),
+                UserModel.username.ilike(f"%{user_name}%"),
+                UserModel.email.ilike(f"%{user_name}%")
+            ),
+            UserModel.id != current_user.id
+        )
+    ).limit(limit)
+
+    result = await db.execute(query)
+    user = result.scalars().all()
+
+    return user
 
 @router.post(
     "/",

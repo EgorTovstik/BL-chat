@@ -66,7 +66,22 @@ export function ChatRoom() {
       }
     };
 
+    const fetchMessageHistory = async () => {
+      if (!chatId) return;
+      try {
+        const history = await chatAPI.getChatHistory(Number(chatId), 50);
+
+        // 🔥 Важно: устанавливаем сообщения ПОСЛЕ загрузки, чтобы не было скачков
+        setMessages(history)
+        log('info', `Loaded ${history.length} messages`);
+      } catch (err: any) {
+        log('warn', 'Failed to load message history', err);
+        // Не редиректим и не показываем ошибку — чат будет работать с новыми сообщениями
+      }
+    };
+
     fetchChatInfo();
+    fetchMessageHistory();
 
     // WebSocket логика (без изменений)
     const connect = () => {
