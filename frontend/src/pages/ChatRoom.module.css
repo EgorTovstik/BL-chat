@@ -77,6 +77,40 @@
   font-size: 14px;
 }
 
+/* ===== Шапка чата ===== */
+.header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  background-color: #fff;
+  border-bottom: 1px solid #dfe1e5;
+  gap: 12px;
+}
+
+/* 🔥 Аватар в шапке */
+.headerAvatar {
+  width: 33px;
+  height: 33px;
+  border-radius: 50%;
+  background-color: #87aadd;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  flex-shrink: 0;
+  user-select: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.chatTitle {
+  font-weight: 600;
+  font-size: 16px;
+  color: #000;
+  flex: 1;
+}
+
 /* ===== Сообщение ===== */
 .messageWrapper {
   display: flex;
@@ -115,6 +149,20 @@
 
 .messageBubble:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* 🔥 Модификатор для сообщений отправителя */
+.messageBubble--sent {
+  background-color: #3390ec;
+  color: #fff;
+  border-bottom-right-radius: 0;    /* Острый угол справа */
+  border-bottom-left-radius: 16px;  /* Круглый угол слева */
+}
+
+/* 🔥 Модификатор для обёртки: выравнивание вправо */
+.messageWrapper--sent {
+  flex-direction: row-reverse;
+  margin-left: auto; /* Прижимаем вправо */
 }
 
 .messageMeta {
@@ -183,4 +231,29 @@
   opacity: 0.5;
   cursor: not-allowed;
   background-color: #94a3b8;
+}
+
+/* Индикатор статуса в шапке */
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-left: 8px;
+  transition: background-color 0.2s;
+}
+
+/* Анимация для оптимистичных сообщений */
+.messageWrapper {
+  transition: opacity 0.2s;
+}
+
+/* Пустой чат */
+.emptyChat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #64748b;
+  font-size: 14px;
 }
