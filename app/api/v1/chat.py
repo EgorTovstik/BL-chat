@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Security
 from sqlalchemy import select, and_, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from datetime import datetime, timezone
 
 from app.schemas import ChatRead, ChatCreate, MessageRead
 from app.models import User as AuthUser, Chat, Message, chat_members
