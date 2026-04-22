@@ -20,12 +20,32 @@ type ChatListUpdate = {
   unread_increment?: number;
 };
 
+type UserStatusUpdate = {
+  type: 'user_status_update';
+  user_id: number;
+  status: 'online' | 'offline';
+};
+
+type TypingUpdate = {
+  type: 'typing_update';
+  chat_id: number;
+  user_id: number;
+  is_typing: boolean;
+};
+
 type ChatSocketContextType = {
   subscribeToChat: (chatId: number, onMessage: (msg: MessageData) => void) => () => void;
   subscribeToChatList: (onUpdate: (update: ChatListUpdate) => void) => () => void;
   sendMessage: (chatId: number, text: string, client_msg_id?: string) => boolean;
+  // 🔥 НОВОЕ: отправка статуса "печатает"
+  sendTypingStatus: (chatId: number, isTyping: boolean) => boolean;
   connectionStatus: 'connecting' | 'open' | 'closed' | 'error';
   reconnect: () => void;
+  // 🔥 Онлайн-статусы
+  isUserOnline: (userId: number) => boolean;
+  subscribeToUserStatus: (userId: number, onChange: (online: boolean) => void) => () => void;
+  // 🔥 Статус "печатает"
+  subscribeToTyping: (chatId: number, onChange: (userIds: Set<number>) => void) => () => void;
 };
 
 const ChatSocketContext = createContext<ChatSocketContextType | null>(null);
@@ -46,12 +66,20 @@ export function ChatSocketProvider({
   const tokenRef = useRef<string | null>(token);
   const userIdRef = useRef<number | null>(currentUserId);
   const isMountedRef = useRef(true);
-  const isConnectingRef = useRef(false); // 🔥 Защита от параллельных подключений
+  const isConnectingRef = useRef(false);
   
   // Хранилища колбэков
   const chatSubscribersRef = useRef<Map<number, Set<(msg: MessageData) => void>>>(new Map());
   const listSubscribersRef = useRef<Set<(update: ChatListUpdate) => void>>(new Set());
   const subscribedChatsRef = useRef<Set<number>>(new Set());
+  
+  // 🔥 Онлайн-статусы
+  const onlineUsersRef = useRef<Set<number>>(new Set());
+  const [onlineUsersVersion, setOnlineUsersVersion] = useState(0);
+
+  // Статус "Печатает..."
+  const typingUsersRef = useRef<Map<number, Set<number>>>(new Map());
+  const [typingVersion, setTypingVersion] = useState(0);
 
   // Синхронизация пропсов с рефами
   useEffect(() => { tokenRef.current = token; }, [token]);
@@ -67,12 +95,11 @@ export function ChatSocketProvider({
     };
   }, []);
 
-  // === Логика подключения (СТАБИЛЬНАЯ) ===
+  // Логика подключения
   const connect = useCallback(() => {
     const currentToken = tokenRef.current;
     const currentUserId = userIdRef.current;
     
-    // 🔥 Если токена нет — НЕ подключаемся вообще
     if (!currentToken || !currentUserId || !isMountedRef.current) {
       setConnectionStatus('closed');
       return;
@@ -80,7 +107,6 @@ export function ChatSocketProvider({
     
     if (isConnectingRef.current) return;
     
-    // Закрываем старое соединение
     if (wsRef.current) {
       const rs = wsRef.current.readyState;
       if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
@@ -91,7 +117,6 @@ export function ChatSocketProvider({
     isConnectingRef.current = true;
     setConnectionStatus('connecting');
     
-    // 🔥 Добавляем _nonce для обхода кэша браузера (опционально)
     const nonce = Date.now();
     const ws = new WebSocket(`ws://localhost:8000/api/v1/ws/?token=${currentToken}&_n=${nonce}`);
     wsRef.current = ws;
@@ -112,11 +137,40 @@ export function ChatSocketProvider({
       if (!isMountedRef.current) return;
       try {
         const data = JSON.parse(event.data);
+        
         if (data.type === 'new_message') {
           chatSubscribersRef.current.get(data.chat_id)?.forEach(cb => cb(data as MessageData));
-        } else if (data.type === 'chat_list_update') {
+        } 
+        else if (data.type === 'chat_list_update') {
           listSubscribersRef.current.forEach(cb => cb(data as ChatListUpdate));
         }
+        else if (data.type === 'user_status_update') {
+          const { user_id, status } = data as UserStatusUpdate;
+          
+          if (status === 'online') {
+            onlineUsersRef.current.add(user_id);
+          } else {
+            onlineUsersRef.current.delete(user_id);
+          }
+          setOnlineUsersVersion(v => v + 1);
+        }
+        else if (data.type === 'typing_update') {
+          const { chat_id, user_id, is_typing } = data as TypingUpdate;
+          
+          const chatSet = typingUsersRef.current.get(chat_id) || new Set<number>();
+          if (is_typing) {
+            chatSet.add(user_id);
+          } else {
+            chatSet.delete(user_id);
+          }
+          
+          if (chatSet.size > 0) {
+            typingUsersRef.current.set(chat_id, chatSet);
+          } else {
+            typingUsersRef.current.delete(chat_id);
+          }
+          setTypingVersion(v => v + 1);
+        }  
       } catch (e) {
         console.error('WS parse error', e);
       }
@@ -126,13 +180,11 @@ export function ChatSocketProvider({
       if (!isMountedRef.current) return;
       isConnectingRef.current = false;
       
-      // 🔥 Не ставим 'closed', если планируем реконнект (чтобы не моргал интерфейс)
       if (event.code === 1000) {
         setConnectionStatus('closed');
         return;
       }
       
-      // 🔥 Реконнект только если токен всё ещё валиден
       if (tokenRef.current && isMountedRef.current) {
         setTimeout(() => {
           if (isMountedRef.current && tokenRef.current && !isConnectingRef.current) {
@@ -147,14 +199,10 @@ export function ChatSocketProvider({
     ws.onerror = (error) => {
       if (!isMountedRef.current) return;
       console.error('WS error', error);
-      // Не ставим 'error' навсегда — onclose обработает статус
     };
   }, []);
 
-  // === Эффект подключения ===
-  // 🔥 Зависимости ТОЛЬКО от token/currentUserId, НЕ от connect
   useEffect(() => {
-    // Если токена нет — закрываем сокет и выходим
     if (!token || !currentUserId) {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.close(1000, 'Auth changed');
@@ -162,18 +210,13 @@ export function ChatSocketProvider({
       setConnectionStatus('closed');
       return;
     }
-    
-    // Если токен есть — подключаемся
     connect();
-    
-    // Cleanup при размонтировании ИЛИ при изменении token/currentUserId
     return () => {
-      // Закрываем только если пропсы стали невалидными (чтобы не рвать соединение при обычных ререндерах)
       if (!token || !currentUserId) {
         wsRef.current?.close(1000, 'Cleanup');
       }
     };
-  }, [token, currentUserId]); 
+  }, [token, currentUserId]);
 
   // === Публичные методы ===
   
@@ -203,16 +246,15 @@ export function ChatSocketProvider({
     };
   }, []);
 
-  // 🔥 reconnect не зависит от connect
   const reconnect = useCallback(() => {
     wsRef.current?.close(1000, 'Manual reconnect');
     isConnectingRef.current = false;
-    // Небольшая задержка, чтобы onclose успел отработать
     setTimeout(() => {
       if (isMountedRef.current) connect();
     }, 100);
   }, [connect]);
 
+  // Отправка обычного сообщения
   const sendMessage = useCallback((chatId: number, text: string, client_msg_id?: string) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -236,12 +278,62 @@ export function ChatSocketProvider({
     }
   }, []);
 
+  // 🔥 НОВОЕ: Отправка статуса "печатает"
+  const sendTypingStatus = useCallback((chatId: number, isTyping: boolean): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn('Cannot send typing: WebSocket not open');
+      return false;
+    }
+    
+    const payload = {
+      type: 'typing',  // 🔥 Правильный тип события!
+      chat_id: chatId,
+      is_typing: isTyping
+    };
+    
+    try {
+      ws.send(JSON.stringify(payload));
+      return true;
+    } catch (e) {
+      console.error('Failed to send typing status', e);
+      return false;
+    }
+  }, []);
+
+  // Онлайн-статусы
+  const isUserOnline = useCallback((userId: number): boolean => {
+    return onlineUsersRef.current.has(userId);
+  }, []);
+
+  const subscribeToUserStatus = useCallback((userId: number, onChange: (online: boolean) => void) => {
+    onChange(onlineUsersRef.current.has(userId));
+    const interval = setInterval(() => {
+      const isOnline = onlineUsersRef.current.has(userId);
+      onChange(isOnline);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Подписка на статус "печатает"
+  const subscribeToTyping = useCallback((chatId: number, onChange: (userIds: Set<number>) => void) => {
+    onChange(typingUsersRef.current.get(chatId) || new Set());
+    const interval = setInterval(() => {
+      onChange(typingUsersRef.current.get(chatId) || new Set());
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
   const value = {
     subscribeToChat,
     subscribeToChatList,
     sendMessage,
+    sendTypingStatus, // 🔥 Экспортируем новую функцию
     connectionStatus,
     reconnect,
+    isUserOnline,
+    subscribeToUserStatus,
+    subscribeToTyping,
   };
 
   return (

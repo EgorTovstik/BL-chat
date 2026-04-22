@@ -10,17 +10,35 @@ import styles from './ChatRoom.module.css';
 export function ChatRoom() {
   const { id: chatId } = useParams<{ id: string }>();
   
-  // 🔥 Используем MessageState для стейта (с флагом isOptimistic)
   const [messages, setMessages] = useState<MessageState[]>([]);
   const [chatInfo, setChatInfo] = useState<Chat | null>(null);
   const [inputText, setInputText] = useState('');
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   
-  const { subscribeToChat, sendMessage, connectionStatus } = useChatSocket();
+  // Статус собеседника онлайн/оффлайн
+  const [isInterlocutorOnline, setIsInterlocutorOnline] = useState(false);
+  
+  // 🔥 НОВОЕ: Список пользователей, которые печатают в этом чате
+  const [typingUsers, setTypingUsers] = useState<Set<number>>(new Set());
+  
+  // 🔥 Добавили sendTypingStatus в деструктуризацию
+  const { 
+    subscribeToChat, 
+    sendMessage, 
+    sendTypingStatus, // 🔥 НОВОЕ
+    connectionStatus, 
+    isUserOnline, 
+    subscribeToUserStatus, 
+    subscribeToTyping 
+  } = useChatSocket();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
   const chatIdRef = useRef<number | null>(null);
+  
+  // 🔥 Рефы для debounce-логики отправки статуса "печатает"
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isCurrentlyTypingRef = useRef(false);
 
   const log = (type: 'info' | 'warn' | 'error', message: string, data?: any) => {
     if (process.env.NODE_ENV !== 'development') return;
@@ -69,7 +87,6 @@ export function ChatRoom() {
       if (!chatId) return;
       try {
         const history = await chatAPI.getChatHistory(Number(chatId), 50);
-        // 🔥 Конвертируем историю в MessageState (все сообщения из истории — не оптимистичные)
         const messagesWithState: MessageState[] = history.map(m => ({ ...m, isOptimistic: false }));
         setMessages(messagesWithState);
         log('info', `Loaded ${history.length} messages`);
@@ -82,7 +99,42 @@ export function ChatRoom() {
     fetchMessageHistory();
   }, [chatId]);
 
-  // Подписка на сообщения чата через контекст
+  // Подписка на статус собеседника (онлайн/оффлайн)
+  useEffect(() => {
+    if (!chatInfo || !currentUserId) return;
+
+    const interlocutor = chatInfo.type === 'personal'
+      ? chatInfo.participants.find(p => p.id !== currentUserId)
+      : null;
+
+    if (interlocutor) {
+      setIsInterlocutorOnline(isUserOnline(interlocutor.id));
+      const unsubscribe = subscribeToUserStatus(interlocutor.id, (online) => {
+        setIsInterlocutorOnline(online);
+      });
+      return () => unsubscribe();
+    } else {
+      setIsInterlocutorOnline(false);
+    }
+  }, [chatInfo, currentUserId, isUserOnline, subscribeToUserStatus]);
+
+  // 🔥 НОВОЕ: Подписка на события "печатает" для текущего чата
+  useEffect(() => {
+    if (!chatId) return;
+    
+    const numericChatId = Number(chatId);
+    
+    const unsubscribe = subscribeToTyping(numericChatId, (typingUserIds) => {
+      // Обновляем список печатающих (исключаем себя)
+      setTypingUsers(new Set(
+        Array.from(typingUserIds).filter(id => id !== currentUserId)
+      ));
+    });
+    
+    return () => unsubscribe();
+  }, [chatId, currentUserId, subscribeToTyping]);
+
+  // Подписка на сообщения чата
   useEffect(() => {
     if (!chatId || currentUserId === null) return;
     
@@ -98,7 +150,6 @@ export function ChatRoom() {
       });
       
       setMessages((prev) => {
-        // 🔥 1. Сначала пробуем найти по client_msg_id (правильный способ)
         const optimisticByIdx = prev.findIndex(m => 
           m.isOptimistic && 
           m.client_msg_id && 
@@ -107,37 +158,29 @@ export function ChatRoom() {
         );
 
         if (optimisticByIdx !== -1) {
-          log('info', `Replacing by client_msg_id at index ${optimisticByIdx}`);
           const newMessages = [...prev];
           newMessages[optimisticByIdx] = { ...serverMessage, isOptimistic: false };
           return newMessages;
         }
 
-        // 🔥 2. Резервный поиск: по тексту + отправителю + времени (в пределах 5 секунд)
-        // Срабатывает, если бэк не возвращает client_msg_id
         const serverTime = new Date(serverMessage.timestamp).getTime();
         const optimisticByContent = prev.findIndex(m => 
           m.isOptimistic &&
           m.sender_id === serverMessage.sender_id &&
           m.text === serverMessage.text &&
-          Math.abs(new Date(m.timestamp).getTime() - serverTime) < 5000 // 5 секунд окно
+          Math.abs(new Date(m.timestamp).getTime() - serverTime) < 5000
         );
 
         if (optimisticByContent !== -1) {
-          log('info', `Replacing by content match at index ${optimisticByContent}`);
           const newMessages = [...prev];
           newMessages[optimisticByContent] = { ...serverMessage, isOptimistic: false };
           return newMessages;
         }
 
-        // 🔥 3. Если дубль по id — игнорируем (защита от повторной рассылки)
         if (prev.some(m => m.id === serverMessage.id)) {
-          log('warn', `Duplicate message id=${serverMessage.id}, ignoring`);
           return prev;
         }
 
-        // 🔥 4. Новое сообщение от другого пользователя — добавляем
-        log('info', `Adding new message id=${serverMessage.id}`);
         return [...prev, { ...serverMessage, isOptimistic: false }];
       });
     });
@@ -145,51 +188,124 @@ export function ChatRoom() {
     return () => unsubscribe();
   }, [chatId, currentUserId, subscribeToChat]);
 
-  // Авто-скролл вниз при новых сообщениях
+  // 🔥 НОВОЕ: Логика отправки статуса "печатает" с дебаунсом
+  // 🔥 Добавили sendTypingStatus в зависимости
+  const handleTyping = useCallback(() => {
+    if (!chatIdRef.current || !currentUserId) return;
+    
+    const numericChatId = chatIdRef.current;
+    
+    // Если поле пустое — сразу сообщаем, что перестали печатать
+    if (!inputText.trim()) {
+      if (isCurrentlyTypingRef.current) {
+        // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus вместо хака с sendMessage
+        sendTypingStatus(numericChatId, false);
+        isCurrentlyTypingRef.current = false;
+      }
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      return;
+    }
+    
+    // Если ещё не отправили сигнал "печатает" — отправляем
+    if (!isCurrentlyTypingRef.current) {
+      // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
+      sendTypingStatus(numericChatId, true);
+      isCurrentlyTypingRef.current = true;
+    }
+    
+    // Сбрасываем предыдущий таймер
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    
+    // Устанавливаем новый таймер: если пауза > 2 сек — считаем, что перестал печатать
+    typingTimeoutRef.current = setTimeout(() => {
+      if (isCurrentlyTypingRef.current) {
+        // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
+        sendTypingStatus(numericChatId, false);
+        isCurrentlyTypingRef.current = false;
+      }
+      typingTimeoutRef.current = null;
+    }, 2000);
+    
+  }, [inputText, currentUserId, sendTypingStatus]); // 🔥 Добавили sendTypingStatus
+
+  // Вызываем handleTyping при каждом изменении inputText
+  useEffect(() => {
+    handleTyping();
+  }, [inputText, handleTyping]);
+
+  // Авто-скролл
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
   
-  // Отправка сообщения (оптимистичное обновление)
+  // Очистка таймеров при размонтировании
+  // 🔥 Добавили sendTypingStatus в зависимости
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        // Опционально: сообщить бэку, что юзер ушёл
+        if (chatIdRef.current && isCurrentlyTypingRef.current) {
+          // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
+          sendTypingStatus(chatIdRef.current, false);
+        }
+      }
+    };
+  }, [sendTypingStatus]); // 🔥 Добавили sendTypingStatus
+  
+  // Отправка сообщения
+  // 🔥 Добавили sendTypingStatus в зависимости
   const handleSend = useCallback(() => {
     if (!inputText.trim() || !chatIdRef.current || !currentUserId) return;
 
     const numericChatId = chatIdRef.current;
     const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     
-    // 🔥 Оптимистичное сообщение (для мгновенного отображения)
     const optimisticMessage: MessageState = {
-      id: -Date.now(), // Временный отрицательный ID
+      id: -Date.now(),
       chat_id: numericChatId,
       sender_id: currentUserId,
       text: inputText,
       timestamp: new Date().toISOString(),
-      read: true, // Свои сообщения сразу "прочитаны"
-      client_msg_id, // 🔥 Для сопоставления с ответом сервера
-      isOptimistic: true, // 🔥 Флаг для визуализации
+      read: true,
+      client_msg_id,
+      isOptimistic: true,
     };
 
-    // 🔥 Мгновенно добавляем в стейт
     setMessages(prev => [...prev, optimisticMessage]);
     setInputText('');
+    
+    // 🔥 Сразу сообщаем, что перестали печатать (после отправки)
+    if (isCurrentlyTypingRef.current) {
+      // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
+      sendTypingStatus(numericChatId, false);
+      isCurrentlyTypingRef.current = false;
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
 
-    // 🔥 Формируем payload для отправки на бэк
     const payload: MessageCreatePayload = {
       type: 'message',
-      chat_id: numericChatId, // 🔥 Обязательно! Бэк ожидает chat_id
+      chat_id: numericChatId,
       text: inputText,
       client_msg_id,
     };
 
-    // Отправляем через сокет
     const sent = sendMessage(numericChatId, inputText, client_msg_id);
     
     if (!sent) {
       log('error', 'Failed to send message via WebSocket');
-      // 🔥 Если отправка не удалась — убираем оптимистичное сообщение
       setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
     }
-  }, [inputText, currentUserId, sendMessage]);
+  }, [inputText, currentUserId, sendMessage, sendTypingStatus]); // 🔥 Добавили sendTypingStatus
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -198,14 +314,27 @@ export function ChatRoom() {
     }
   };
 
-  // Очистка при размонтировании
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
+  // 🔥 useMemo ДО раннего возврата
+  const typingText = React.useMemo(() => {
+    if (typingUsers.size === 0) return '';
+    if (!chatInfo) return '';
+    
+    if (chatInfo.type === 'personal') {
+      return 'Печатает...';
+    } else {
+      const names = Array.from(typingUsers)
+        .map(uid => chatInfo.participants.find(p => p.id === uid)?.full_name || 'Участник')
+        .slice(0, 2);
+      
+      if (names.length === 1) {
+        return `${names[0]} печатает...`;
+      } else {
+        return `${names.join(', ')} печатают...`;
+      }
+    }
+  }, [typingUsers, chatInfo]);
 
-  // Заглушка, пока не загрузился user_id
+  // 🔥 Ранний возврат — ПОСЛЕ всех хуков
   if (currentUserId === null) {
     return (
       <div className={styles.container}>
@@ -214,12 +343,10 @@ export function ChatRoom() {
     );
   }
 
-  // Вычисляем заголовок
   const chatTitle = chatInfo
     ? getChatTitle(chatInfo, currentUserId)
     : `Загрузка...`;
 
-  // Маппинг статусов для индикатора
   const statusMap: Record<typeof connectionStatus, { color: string; label: string }> = {
     connecting: { color: '#fbbf24', label: 'Подключение...' },
     open: { color: '#4ade80', label: 'Онлайн' },
@@ -232,7 +359,6 @@ export function ChatRoom() {
     <div className={styles.container}>
       {/* Шапка чата */}
       <div className={styles.header}>
-        {/* 🔥 Аватар чата */}
         <div className={styles.headerAvatar}>
           {chatInfo?.type === 'personal' 
             ? chatInfo.participants.find(p => p.id !== currentUserId)?.full_name?.charAt(0).toUpperCase() || '?'
@@ -240,13 +366,20 @@ export function ChatRoom() {
           }
         </div>
 
-        <span className={styles.chatTitle}>{chatTitle}</span>
+        <div className={styles.userInfo}>
+          <span className={styles.chatTitle}>{chatTitle}</span>
+          
+          {chatInfo?.type === 'personal' && (
+            <span className={`${styles.userStatus} ${isInterlocutorOnline ? styles.statusOnline : styles.statusOffline}`}>
+              {isInterlocutorOnline ? 'В сети' : 'Не в сети'}
+            </span>
+          )}
+        </div>
 
-        {/* Индикатор статуса */}
         <span
-          className={`${styles.statusDot} ${styles[connectionStatus]}`}
+          className={styles.connectionStatusDot}
           style={{ backgroundColor: currentStatus.color }}
-          title={currentStatus.label}
+          title={`Соединение: ${currentStatus.label}`}
         />
       </div>
 
@@ -267,9 +400,7 @@ export function ChatRoom() {
 
             return (
               <div
-                // 🔥 Уникальный ключ: client_msg_id для оптимистичных, id для реальных
                 key={msg.isOptimistic && msg.client_msg_id ? msg.client_msg_id : msg.id}
-                // 🔥 Используем CSS-классы вместо инлайн flex-direction
                 className={`${styles.messageWrapper} ${isMyMessage ? styles['messageWrapper--sent'] : ''}`}
                 style={{
                   opacity: msg.isOptimistic ? 0.7 : 1,
@@ -282,7 +413,6 @@ export function ChatRoom() {
                   </div>
                 )}
 
-                {/* 🔥 Используем CSS-классы вместо инлайн стилей */}
                 <div className={`${styles.messageBubble} ${isMyMessage ? styles['messageBubble--sent'] : ''}`}>
                   <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 2 }}>
                     {senderName}
@@ -304,6 +434,18 @@ export function ChatRoom() {
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      {/* 🔥 Индикатор "Печатает..." с анимацией */}
+      {typingText && (
+        <div className={styles.typingIndicator}>
+          <span className={styles.typingText}>{typingText}</span>
+          <span className={styles.typingDots}>
+            <span className={styles.dot}></span>
+            <span className={styles.dot}></span>
+            <span className={styles.dot}></span>
+          </span>
+        </div>
+      )}
 
       {/* Поле ввода */}
       <div className={styles.inputArea}>
