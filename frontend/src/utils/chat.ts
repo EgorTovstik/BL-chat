@@ -16,3 +16,21 @@ export const getChatTitle = (chat: Chat, myId: number | null): string => {
   }
   return 'Без названия';
 }
+
+export function getChatPreviewText(
+  chat: Chat,
+  currentUserId: number | null,
+): string {
+  let previewText = "Нажмите, чтобы открыть чат";
+  const lastMsg = chat.last_message;
+  if (lastMsg) {
+    if (chat.type === 'group' && lastMsg.sender_id !== currentUserId) {
+      const senderName = lastMsg.sender?.full_name || 'Участник';
+      previewText = `${senderName}: ${lastMsg.text}`;
+    } else {
+      previewText = (lastMsg.sender_id === currentUserId ? 'Вы: ' : '') + lastMsg.text;
+    }
+  }
+
+  return previewText;
+}

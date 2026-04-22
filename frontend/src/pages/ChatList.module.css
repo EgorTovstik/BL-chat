@@ -551,3 +551,30 @@
   text-align: center;
   margin-left: 8px;
 }
+
+/* Контейнер для правой части шапки (статус + время) */
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Базовый стиль точки статуса */
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background-color 0.2s;
+}
+
+/* Онлайн — зелёный, с пульсацией */
+.statusDot.online {
+  background-color: #4ade80;
+}
+
+/* Оффлайн — серый */
+.statusDot.offline {
+  background-color: #94a3b8;
+}
