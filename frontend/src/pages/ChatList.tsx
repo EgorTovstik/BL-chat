@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'; // 🔥 useMemo больше не нужен здесь
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chatAPI } from '../api/chat';
 import { authAPI } from '../api/auth';
 import { getChatTitle, getChatPreviewText } from "../utils/chat";
 import { useChatSocket } from '../context/ChatSocketContext'; 
 import { CreateChatModal } from '../components/CreateChatModal';
-import type { Chat, MessageRead } from '../types'; // 🔥 UserRead, ChatCreatePayload больше не нужны здесь
+import type { Chat, MessageRead } from '../types';
 import styles from './ChatList.module.css';
 
 export function ChatList() {
@@ -14,15 +14,20 @@ export function ChatList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
-  // 🔥 СОХРАНЯЕМ: состояние видимости модалки управляется родителем
   const [isModalOpen, setIsModalOpen] = useState(false);
   
   const navigate = useNavigate();
   const { id: activeChatId } = useParams<{ id: string }>();
   
-  const { subscribeToChatList, isUserOnline } = useChatSocket();
+  const { 
+    subscribeToChatList, 
+    subscribeToMessagesRead, // 🔥 Новая подписка
+    isUserOnline,
+    markMessagesRead,
+    connectionStatus 
+  } = useChatSocket();
 
-  // Загрузка начальных данных
+  // === Загрузка начальных данных ===
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -50,7 +55,7 @@ export function ChatList() {
     loadData();
   }, [navigate]);
 
-  // Подписка на WebSocket-апдейты списка чатов
+  // === Подписка на новые сообщения (обновление превью) ===
   useEffect(() => {
     const unsubscribe = subscribeToChatList((update) => {
       setChats(prev => {
@@ -58,6 +63,8 @@ export function ChatList() {
         if (idx === -1) return prev;
         
         const chatToUpdate = prev[idx];
+        const isFromOtherUser = update.sender_id !== currentUserId;
+        
         const updatedChat: Chat = {
           ...chatToUpdate,
           last_message: {
@@ -66,14 +73,15 @@ export function ChatList() {
             sender_id: update.sender_id,
             text: update.last_message_text,
             timestamp: update.last_message_at,
-            read: false
-          } as MessageRead
+            read: !isFromOtherUser
+          } as MessageRead,
+          // 🔥 Обновляем unread_count ТОЛЬКО для сообщений от других
+          unread_count: isFromOtherUser 
+            ? (chatToUpdate.unread_count || 0) + 1 
+            : (chatToUpdate.unread_count || 0)
         };
         
-        if (update.sender_id !== currentUserId) {
-          updatedChat.unread_count = (updatedChat.unread_count || 0) + (update.unread_increment || 1);
-        }
-        
+        // Перемещаем наверх и сортируем
         const filtered = prev.filter((_, i) => i !== idx);
         return [updatedChat, ...filtered].sort((a, b) => {
           const timeA = a.last_message?.timestamp ? new Date(a.last_message.timestamp).getTime() : 0;
@@ -86,18 +94,52 @@ export function ChatList() {
     return () => unsubscribe();
   }, [subscribeToChatList, currentUserId]);
 
-  // 🔥 Хендлер открытия модалки — теперь он реально открывает
+  // === 🔥 Подписка на события прочтения (обновление только unread_count) ===
+  useEffect(() => {
+    // Подписываемся на все чаты — при получении события обновляем нужный
+    const unsubscribe = subscribeToMessagesRead('*', (data) => {
+      setChats(prev => prev.map(chat => {
+        // Обновляем только если событие для этого чата И прочитал НЕ я
+        if (data.reader_id !== currentUserId) {
+          return { ...chat, unread_count: 0 };
+        }
+        return chat;
+      }));
+    });
+    
+    return () => unsubscribe();
+  }, [subscribeToMessagesRead, currentUserId]);
+
+  // === Обработчик выбора чата ===
+  const handleChatSelect = useCallback((chatId: number, unreadCount?: number) => {
+    // Локально сбрасываем счётчик для мгновенного отклика
+    if (unreadCount && unreadCount > 0) {
+      setChats(prev => prev.map(c => 
+        c.id === chatId ? { ...c, unread_count: 0 } : c
+      ));
+    }
+    
+    navigate(`/chats/chat/${chatId}`);
+    
+    // Уведомляем бэкенд о прочтении
+    setTimeout(() => {
+      if (connectionStatus === 'open') {
+        markMessagesRead(chatId);
+      }
+    }, 100);
+  }, [navigate, markMessagesRead, connectionStatus]);
+
+  // === Хендлеры модалки ===
   const handleOpenModal = (mode: 'personal' | 'group') => {
     setIsModalOpen(true);
-    // 🔥 Опционально: можно передать mode в модалку через проп, если нужно
   };
 
-  // 🔥 Колбэк: модалка сообщает, что чат создан
   const handleChatCreated = (newChat: Chat) => {
     setChats(prev => [newChat, ...prev]);
     navigate(`/chats/chat/${newChat.id}`);
   };
 
+  // === Рендер ===
   if (loading) return <div className={styles.center}>Загрузка...</div>;
   if (error) return (
     <div className={styles.center}>
@@ -145,18 +187,13 @@ export function ChatList() {
                   minute: '2-digit' 
                 })
               : '';
+              
+              const hasUnread = (chat.unread_count || 0) > 0;
             
             return (
               <div
                 key={chat.id}
-                onClick={() => {
-                  if (chat.unread_count && chat.unread_count > 0) {
-                    setChats(prev => prev.map(c => 
-                      c.id === chat.id ? { ...c, unread_count: 0 } : c
-                    ));
-                  }
-                  navigate(`/chats/chat/${chat.id}`);
-                }}
+                onClick={() => handleChatSelect(chat.id, chat.unread_count)}
                 className={`${styles.chatItem} ${chat.id == activeChatId ? styles.active : ''}`}
               >
                 <div className={styles.avatar}>
@@ -168,7 +205,6 @@ export function ChatList() {
                     <span className={styles.chatTitle}>{displayName}</span>
                     
                     <div className={styles.headerRight}>
-                      {/* 🔥 Индикатор онлайн-статуса (только для личных чатов) */}
                       {chat.type === 'personal' && (
                         <span 
                           className={`${styles.statusDot} ${isInterlocutorOnline ? styles.online : styles.offline}`}
@@ -187,9 +223,10 @@ export function ChatList() {
                         ? lastMessageText.slice(0, 40) + '...' 
                         : lastMessageText}
                     </span>
-                    {chat.unread_count && chat.unread_count > 0 && (
+
+                    {hasUnread && (
                       <span className={styles.unreadBadge}>
-                        {chat.unread_count > 99 ? '99+' : chat.unread_count}
+                        {(chat.unread_count || 0) > 99 ? '99+' : chat.unread_count}
                       </span>
                     )}
                   </div>
@@ -209,7 +246,6 @@ export function ChatList() {
         ✎
       </button>
 
-      {/* 🔥 Модалка: isOpen контролируется родителем */}
       <CreateChatModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}

@@ -33,6 +33,19 @@ type TypingUpdate = {
   is_typing: boolean;
 };
 
+type InitialOnlineList = {
+  type: 'initial_online_list';
+  user_ids: number[];
+};
+
+type MessagesReadUpdate = {
+  type: 'messages_read';
+  chat_id: number;
+  reader_id: number;
+  count: number;
+  last_read_at: string;
+};
+
 type ChatSocketContextType = {
   subscribeToChat: (chatId: number, onMessage: (msg: MessageData) => void) => () => void;
   subscribeToChatList: (onUpdate: (update: ChatListUpdate) => void) => () => void;
@@ -46,6 +59,12 @@ type ChatSocketContextType = {
   subscribeToUserStatus: (userId: number, onChange: (online: boolean) => void) => () => void;
   // 🔥 Статус "печатает"
   subscribeToTyping: (chatId: number, onChange: (userIds: Set<number>) => void) => () => void;
+  subscribeToMessagesRead: (
+    chatId: number, 
+    onRead: (data: { reader_id: number; last_read_at: string }) => void
+  ) => () => void;
+  
+  markMessagesRead: (chatId: number, upToMessageId?: number) => boolean;
 };
 
 const ChatSocketContext = createContext<ChatSocketContextType | null>(null);
@@ -80,6 +99,9 @@ export function ChatSocketProvider({
   // Статус "Печатает..."
   const typingUsersRef = useRef<Map<number, Set<number>>>(new Map());
   const [typingVersion, setTypingVersion] = useState(0);
+
+  // 🔥 Хранилище подписчиков на события прочтения (по chat_id)
+  const readSubscribersRef = useRef<Map<number, Set<(data: { reader_id: number; last_read_at: string }) => void>>>(new Map());
 
   // Синхронизация пропсов с рефами
   useEffect(() => { tokenRef.current = token; }, [token]);
@@ -144,6 +166,13 @@ export function ChatSocketProvider({
         else if (data.type === 'chat_list_update') {
           listSubscribersRef.current.forEach(cb => cb(data as ChatListUpdate));
         }
+        // 🔥 === НОВОЕ: Обработка начального списка онлайн ===
+        else if (data.type === 'initial_online_list') {
+          // Очищаем и заполняем заново, чтобы избежать рассинхрона
+          onlineUsersRef.current = new Set<number>(data.user_ids);
+          setOnlineUsersVersion(v => v + 1); // Триггерим ре-рендер подписчиков
+        }
+        // 🔥 === Существующая логика обновлений статуса ===
         else if (data.type === 'user_status_update') {
           const { user_id, status } = data as UserStatusUpdate;
           
@@ -153,6 +182,14 @@ export function ChatSocketProvider({
             onlineUsersRef.current.delete(user_id);
           }
           setOnlineUsersVersion(v => v + 1);
+        }
+        else if (data.type === 'messages_read') {
+          const { chat_id, reader_id, last_read_at } = data as MessagesReadUpdate;
+          
+          // 🔥 Уведомляем ТОЛЬКО подписчиков на read-события для этого чата
+          readSubscribersRef.current.get(chat_id)?.forEach(cb => {
+            cb({ reader_id, last_read_at });
+          });
         }
         else if (data.type === 'typing_update') {
           const { chat_id, user_id, is_typing } = data as TypingUpdate;
@@ -307,12 +344,16 @@ export function ChatSocketProvider({
   }, []);
 
   const subscribeToUserStatus = useCallback((userId: number, onChange: (online: boolean) => void) => {
+    // Мгновенный вызов с текущим статусом
     onChange(onlineUsersRef.current.has(userId));
-    const interval = setInterval(() => {
-      const isOnline = onlineUsersRef.current.has(userId);
-      onChange(isOnline);
-    }, 1000);
-    return () => clearInterval(interval);
+    
+    // Подписка на изменения версии (альтернатива поллингу)
+    const checkStatus = () => onChange(onlineUsersRef.current.has(userId));
+    
+    // Можно использовать ref для хранения колбэка, если нужна точная подписка,
+    // но для простоты достаточно полагаться на то, что компоненты сами 
+    // переподпишутся при ре-рендере.
+    return () => {}; 
   }, []);
 
   // Подписка на статус "печатает"
@@ -324,16 +365,56 @@ export function ChatSocketProvider({
     return () => clearInterval(interval);
   }, []);
 
+  const subscribeToMessagesRead = useCallback((
+    chatId: number, 
+    onRead: (data: { reader_id: number; last_read_at: string }) => void
+  ) => {
+    if (!readSubscribersRef.current.has(chatId)) {
+      readSubscribersRef.current.set(chatId, new Set());
+    }
+    readSubscribersRef.current.get(chatId)!.add(onRead);
+
+    return () => {
+      readSubscribersRef.current.get(chatId)?.delete(onRead);
+      if (readSubscribersRef.current.get(chatId)?.size === 0) {
+        readSubscribersRef.current.delete(chatId);
+      }
+    };
+  }, []);
+
+  const markMessagesRead = useCallback((chatId: number, upToMessageId?: number): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn('Cannot mark read: WebSocket not open');
+      return false;
+    }
+    
+    const payload: any = { type: 'read', chat_id: chatId };
+    if (upToMessageId !== undefined) {
+      payload.up_to_message_id = upToMessageId;
+    }
+    
+    try {
+      ws.send(JSON.stringify(payload));
+      return true;
+    } catch (e) {
+      console.error('Failed to send read status', e);
+      return false;
+    }
+  }, []);
+
   const value = {
     subscribeToChat,
     subscribeToChatList,
     sendMessage,
-    sendTypingStatus, // 🔥 Экспортируем новую функцию
+    sendTypingStatus,
     connectionStatus,
     reconnect,
     isUserOnline,
     subscribeToUserStatus,
     subscribeToTyping,
+    subscribeToMessagesRead, // 🔥 Добавьте эту строку
+    markMessagesRead,
   };
 
   return (

@@ -21,11 +21,13 @@ export function ChatRoom() {
   // 🔥 НОВОЕ: Список пользователей, которые печатают в этом чате
   const [typingUsers, setTypingUsers] = useState<Set<number>>(new Set());
   
-  // 🔥 Добавили sendTypingStatus в деструктуризацию
+  // 🔥 Добавили новые функции из контекста
   const { 
     subscribeToChat, 
     sendMessage, 
-    sendTypingStatus, // 🔥 НОВОЕ
+    sendTypingStatus,
+    markMessagesRead,           // 🔥 Маркер прочтения
+    subscribeToMessagesRead,    // 🔥 Подписка на события прочтения
     connectionStatus, 
     isUserOnline, 
     subscribeToUserStatus, 
@@ -35,10 +37,14 @@ export function ChatRoom() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
   const chatIdRef = useRef<number | null>(null);
+  const currentUserIdRef = useRef<number | null>(null);
   
   // 🔥 Рефы для debounce-логики отправки статуса "печатает"
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCurrentlyTypingRef = useRef(false);
+  
+  // 🔥 Реф для отслеживания, отправляли ли уже markMessagesRead для текущей сессии чата
+  const hasMarkedReadRef = useRef(false);
 
   const log = (type: 'info' | 'warn' | 'error', message: string, data?: any) => {
     if (process.env.NODE_ENV !== 'development') return;
@@ -65,6 +71,7 @@ export function ChatRoom() {
       const payload = JSON.parse(window.atob(base64));
       const userId = Number(payload.sub);
       setCurrentUserId(userId);
+      currentUserIdRef.current = userId;
       log('info', `Parsed token: user_id=${userId}`);
     } catch (e) {
       log('error', 'Failed to parse token', e);
@@ -99,6 +106,11 @@ export function ChatRoom() {
     fetchMessageHistory();
   }, [chatId]);
 
+  // Сброс флага hasMarkedRead при смене чата
+  useEffect(() => {
+    hasMarkedReadRef.current = false;
+  }, [chatId]);
+
   // Подписка на статус собеседника (онлайн/оффлайн)
   useEffect(() => {
     if (!chatInfo || !currentUserId) return;
@@ -125,7 +137,6 @@ export function ChatRoom() {
     const numericChatId = Number(chatId);
     
     const unsubscribe = subscribeToTyping(numericChatId, (typingUserIds) => {
-      // Обновляем список печатающих (исключаем себя)
       setTypingUsers(new Set(
         Array.from(typingUserIds).filter(id => id !== currentUserId)
       ));
@@ -133,6 +144,28 @@ export function ChatRoom() {
     
     return () => unsubscribe();
   }, [chatId, currentUserId, subscribeToTyping]);
+
+  // 🔥 НОВОЕ: Подписка на события "прочитано" — обновляем галочки у своих сообщений
+  useEffect(() => {
+    if (!chatId || !currentUserId) return;
+    
+    const numericChatId = Number(chatId);
+    
+    const unsubscribe = subscribeToMessagesRead(numericChatId, ({ reader_id, last_read_at }) => {
+      // Если прочитал НЕ я → обновляем статус read у моих сообщений
+      if (reader_id !== currentUserId) {
+        setMessages(prev => prev.map(msg => {
+          // Обновляем только мои непрочитанные сообщения, отправленные до момента прочтения
+          if (msg.sender_id === currentUserId && !msg.read && msg.timestamp <= last_read_at) {
+            return { ...msg, read: true };
+          }
+          return msg;
+        }));
+      }
+    });
+    
+    return () => unsubscribe();
+  }, [chatId, currentUserId, subscribeToMessagesRead]);
 
   // Подписка на сообщения чата
   useEffect(() => {
@@ -150,6 +183,7 @@ export function ChatRoom() {
       });
       
       setMessages((prev) => {
+        // 1. Заменяем оптимистичное сообщение на реальное
         const optimisticByIdx = prev.findIndex(m => 
           m.isOptimistic && 
           m.client_msg_id && 
@@ -163,6 +197,7 @@ export function ChatRoom() {
           return newMessages;
         }
 
+        // 2. Фолбэк: поиск по контенту + времени
         const serverTime = new Date(serverMessage.timestamp).getTime();
         const optimisticByContent = prev.findIndex(m => 
           m.isOptimistic &&
@@ -177,8 +212,19 @@ export function ChatRoom() {
           return newMessages;
         }
 
+        // 3. Защита от дублей
         if (prev.some(m => m.id === serverMessage.id)) {
           return prev;
+        }
+
+        // 4. 🔥 НОВОЕ: Если пришло сообщение ОТ ДРУГОГО пользователя и чат открыт — сразу маркируем как прочитанное
+        if (serverMessage.sender_id !== currentUserId && document.visibilityState === 'visible') {
+          // Откладываем на 100мс, чтобы не спамить при пакетной отправке
+          setTimeout(() => {
+            if (chatIdRef.current && connectionStatus === 'open') {
+              markMessagesRead(chatIdRef.current);
+            }
+          }, 100);
         }
 
         return [...prev, { ...serverMessage, isOptimistic: false }];
@@ -186,19 +232,47 @@ export function ChatRoom() {
     });
 
     return () => unsubscribe();
-  }, [chatId, currentUserId, subscribeToChat]);
+  }, [chatId, currentUserId, subscribeToChat, markMessagesRead, connectionStatus]);
+
+  // 🔥 НОВОЕ: Отправляем markMessagesRead при первом рендере чата (если он видим)
+  useEffect(() => {
+    if (!chatId || !currentUserId || !chatInfo || hasMarkedReadRef.current) return;
+    if (document.visibilityState !== 'visible') return;
+    
+    // Небольшая задержка, чтобы сокет точно успел подключиться
+    const timer = setTimeout(() => {
+      if (isMountedRef.current && connectionStatus === 'open') {
+        markMessagesRead(Number(chatId));
+        hasMarkedReadRef.current = true;
+        log('info', `📖 Marked messages as read for chat ${chatId}`);
+      }
+    }, 200);
+    
+    return () => clearTimeout(timer);
+  }, [chatId, currentUserId, chatInfo, markMessagesRead, connectionStatus]);
+
+  // 🔥 НОВОЕ: Отправляем markMessagesRead при возврате вкладки в фокус
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && chatId && connectionStatus === 'open') {
+        markMessagesRead(Number(chatId));
+        hasMarkedReadRef.current = true;
+        log('info', `📖 Marked read on visibility change for chat ${chatId}`);
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [chatId, markMessagesRead, connectionStatus]);
 
   // 🔥 НОВОЕ: Логика отправки статуса "печатает" с дебаунсом
-  // 🔥 Добавили sendTypingStatus в зависимости
   const handleTyping = useCallback(() => {
     if (!chatIdRef.current || !currentUserId) return;
     
     const numericChatId = chatIdRef.current;
     
-    // Если поле пустое — сразу сообщаем, что перестали печатать
     if (!inputText.trim()) {
       if (isCurrentlyTypingRef.current) {
-        // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus вместо хака с sendMessage
         sendTypingStatus(numericChatId, false);
         isCurrentlyTypingRef.current = false;
       }
@@ -209,31 +283,25 @@ export function ChatRoom() {
       return;
     }
     
-    // Если ещё не отправили сигнал "печатает" — отправляем
     if (!isCurrentlyTypingRef.current) {
-      // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
       sendTypingStatus(numericChatId, true);
       isCurrentlyTypingRef.current = true;
     }
     
-    // Сбрасываем предыдущий таймер
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
     
-    // Устанавливаем новый таймер: если пауза > 2 сек — считаем, что перестал печатать
     typingTimeoutRef.current = setTimeout(() => {
       if (isCurrentlyTypingRef.current) {
-        // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
         sendTypingStatus(numericChatId, false);
         isCurrentlyTypingRef.current = false;
       }
       typingTimeoutRef.current = null;
     }, 2000);
     
-  }, [inputText, currentUserId, sendTypingStatus]); // 🔥 Добавили sendTypingStatus
+  }, [inputText, currentUserId, sendTypingStatus]);
 
-  // Вызываем handleTyping при каждом изменении inputText
   useEffect(() => {
     handleTyping();
   }, [inputText, handleTyping]);
@@ -244,23 +312,19 @@ export function ChatRoom() {
   }, [messages]);
   
   // Очистка таймеров при размонтировании
-  // 🔥 Добавили sendTypingStatus в зависимости
   useEffect(() => {
     return () => {
       isMountedRef.current = false;
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
-        // Опционально: сообщить бэку, что юзер ушёл
         if (chatIdRef.current && isCurrentlyTypingRef.current) {
-          // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
           sendTypingStatus(chatIdRef.current, false);
         }
       }
     };
-  }, [sendTypingStatus]); // 🔥 Добавили sendTypingStatus
+  }, [sendTypingStatus]);
   
   // Отправка сообщения
-  // 🔥 Добавили sendTypingStatus в зависимости
   const handleSend = useCallback(() => {
     if (!inputText.trim() || !chatIdRef.current || !currentUserId) return;
 
@@ -281,9 +345,7 @@ export function ChatRoom() {
     setMessages(prev => [...prev, optimisticMessage]);
     setInputText('');
     
-    // 🔥 Сразу сообщаем, что перестали печатать (после отправки)
     if (isCurrentlyTypingRef.current) {
-      // 🔥 ИСПРАВЛЕНО: используем sendTypingStatus
       sendTypingStatus(numericChatId, false);
       isCurrentlyTypingRef.current = false;
     }
@@ -292,20 +354,13 @@ export function ChatRoom() {
       typingTimeoutRef.current = null;
     }
 
-    const payload: MessageCreatePayload = {
-      type: 'message',
-      chat_id: numericChatId,
-      text: inputText,
-      client_msg_id,
-    };
-
     const sent = sendMessage(numericChatId, inputText, client_msg_id);
     
     if (!sent) {
       log('error', 'Failed to send message via WebSocket');
       setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
     }
-  }, [inputText, currentUserId, sendMessage, sendTypingStatus]); // 🔥 Добавили sendTypingStatus
+  }, [inputText, currentUserId, sendMessage, sendTypingStatus]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -314,22 +369,21 @@ export function ChatRoom() {
     }
   };
 
-  // 🔥 useMemo ДО раннего возврата
+  // 🔥 useMemo для текста "печатает"
   const typingText = React.useMemo(() => {
-    if (typingUsers.size === 0) return '';
-    if (!chatInfo) return '';
+    if (typingUsers.size === 0 || !chatInfo) return '';
     
     if (chatInfo.type === 'personal') {
-      return 'Печатает...';
+      return 'Печатает';
     } else {
       const names = Array.from(typingUsers)
         .map(uid => chatInfo.participants.find(p => p.id === uid)?.full_name || 'Участник')
         .slice(0, 2);
       
       if (names.length === 1) {
-        return `${names[0]} печатает...`;
+        return `${names[0]} печатает`;
       } else {
-        return `${names.join(', ')} печатают...`;
+        return `${names.join(', ')} печатают`;
       }
     }
   }, [typingUsers, chatInfo]);
@@ -421,7 +475,11 @@ export function ChatRoom() {
                   <div className={styles.messageMeta}>
                     {time}
                     {isMyMessage && !msg.isOptimistic && (
-                      <span style={{ color: msg.read ? '#4ade80' : 'inherit' }}>
+                      <span 
+                        className={styles.readStatus}
+                        style={{ color: msg.read ? '#4ade80' : 'inherit' }}
+                        title={msg.read ? 'Прочитано' : 'Доставлено'}
+                      >
                         {msg.read ? '✓✓' : '✓'}
                       </span>
                     )}
