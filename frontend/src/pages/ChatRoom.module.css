@@ -77,6 +77,75 @@
   font-size: 14px;
 }
 
+/* ===== Шапка чата ===== */
+.header {
+  display: flex;
+  align-items: center;
+  padding: 7px 16px;
+  background-color: #fff;
+  border-bottom: 1px solid #dfe1e5;
+  gap: 12px;
+}
+
+.headerAvatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background-color: #87aadd;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  flex-shrink: 0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 🔥 Контейнер для имени и статуса (вертикальный стек) */
+.userInfo {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1; /* Занимает всё доступное место */
+  min-width: 0; /* Важно для обрезки длинного имени */
+}
+
+.chatTitle {
+  font-weight: 600;
+  font-size: 16px;
+  color: #000;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+/* 🔥 Стили текстового статуса */
+.userStatus {
+  font-size: 12px;
+  font-weight: 400;
+  margin-top: 2px;
+  transition: color 0.2s;
+}
+
+/* Цвета статусов */
+.statusOnline {
+  color: #4ade80; /* Ярко-зелёный */
+}
+
+.statusOffline {
+  color: #94a3b8; /* Серый */
+}
+
+/* Маленькая точка статуса соединения (если оставил) */
+.connectionStatusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 /* ===== Сообщение ===== */
 .messageWrapper {
   display: flex;
@@ -115,6 +184,27 @@
 
 .messageBubble:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* 🔥 Модификатор для сообщений отправителя */
+.messageBubble--sent {
+  background-color: #3390ec;
+  color: #fff;
+  border-bottom-right-radius: 0;    /* Острый угол справа */
+  border-bottom-left-radius: 16px;  /* Круглый угол слева */
+}
+
+.messageBubble--get {
+  background-color: #e8f2fd;
+  color: #fff;
+  border-bottom-right-radius: 0;    /* Острый угол справа */
+  border-bottom-left-radius: 16px;  /* Круглый угол слева */
+}
+
+/* 🔥 Модификатор для обёртки: выравнивание вправо */
+.messageWrapper--sent {
+  flex-direction: row-reverse;
+  margin-left: auto; /* Прижимаем вправо */
 }
 
 .messageMeta {
@@ -183,4 +273,83 @@
   opacity: 0.5;
   cursor: not-allowed;
   background-color: #94a3b8;
+}
+
+/* Индикатор статуса в шапке */
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-left: 8px;
+  transition: background-color 0.2s;
+}
+
+/* Анимация для оптимистичных сообщений */
+.messageWrapper {
+  transition: opacity 0.2s;
+}
+
+/* Пустой чат */
+.emptyChat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #64748b;
+  font-size: 14px;
+}
+
+/* ===== Индикатор "Печатает..." ===== */
+.typingIndicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  background-color: #f8fafc;
+  border-top: 1px solid #e4e6eb;
+  font-size: 13px;
+  color: #64748b;
+  min-height: 36px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.typingText {
+  font-weight: 500;
+}
+
+/* Контейнер для анимированных точек */
+.typingDots {
+  display: flex;
+  gap: 2px;
+}
+
+/* Сами точки */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #94a3b8;
+  animation: typingBounce 1.4s infinite ease-in-out both;
+}
+
+/* Задержка для каждой точки, чтобы создать эффект "волны" */
+.dot:nth-child(1) { animation-delay: -0.32s; }
+.dot:nth-child(2) { animation-delay: -0.16s; }
+.dot:nth-child(3) { animation-delay: 0s; }
+
+@keyframes typingBounce {
+  0%, 80%, 100% { 
+    transform: scale(0.8); 
+    opacity: 0.5; 
+  }
+  40% { 
+    transform: scale(1.2); 
+    opacity: 1; 
+  }
 }

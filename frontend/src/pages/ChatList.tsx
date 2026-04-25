@@ -1,11 +1,11 @@
-// src/pages/ChatList.tsx
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chatAPI } from '../api/chat';
 import { authAPI } from '../api/auth';
-import { apiClient } from '../api/client'; // 🔥 Для поиска пользователей
-import { getChatTitle } from "../utils/chat";
-import type { Chat, UserRead, ChatCreatePayload } from '../types';
+import { getChatTitle, getChatPreviewText } from "../utils/chat";
+import { useChatSocket } from '../context/ChatSocketContext'; 
+import { CreateChatModal } from '../components/CreateChatModal';
+import type { Chat, MessageRead } from '../types';
 import styles from './ChatList.module.css';
 
 export function ChatList() {
@@ -13,19 +13,21 @@ export function ChatList() {
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  
   const navigate = useNavigate();
   const { id: activeChatId } = useParams<{ id: string }>();
+  
+  const { 
+    subscribeToChatList, 
+    subscribeToMessagesRead, // 🔥 Новая подписка
+    isUserOnline,
+    markMessagesRead,
+    connectionStatus 
+  } = useChatSocket();
 
-  // 🔥 Состояния для модального окна создания чата
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState<'personal' | 'group' | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<UserRead[]>([]);
-  const [selectedUsers, setSelectedUsers] = useState<UserRead[]>([]);
-  const [groupName, setGroupName] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [createError, setCreateError] = useState('');
-
+  // === Загрузка начальных данных ===
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -53,116 +55,91 @@ export function ChatList() {
     loadData();
   }, [navigate]);
 
-  // 🔥 Поиск пользователей с дебаунсом (300мс)
+  // === Подписка на новые сообщения (обновление превью) ===
   useEffect(() => {
-    if (!isModalOpen || modalMode === null) return;
-    if (searchQuery.length < 2) {
-      setSearchResults([]);
-      return;
-    }
-
-    setIsSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        // 🔥 Запрос к эндпоинту /user/search
-        const response = await apiClient.get<UserRead[]>('/user/search', {
-          params: { user_name: searchQuery }
+    const unsubscribe = subscribeToChatList((update) => {
+      setChats(prev => {
+        const idx = prev.findIndex(c => c.id === update.chat_id);
+        if (idx === -1) return prev;
+        
+        const chatToUpdate = prev[idx];
+        const isFromOtherUser = update.sender_id !== currentUserId;
+        
+        const updatedChat: Chat = {
+          ...chatToUpdate,
+          last_message: {
+            id: 0,
+            chat_id: update.chat_id,
+            sender_id: update.sender_id,
+            text: update.last_message_text,
+            timestamp: update.last_message_at,
+            read: !isFromOtherUser
+          } as MessageRead,
+          // 🔥 Обновляем unread_count ТОЛЬКО для сообщений от других
+          unread_count: isFromOtherUser 
+            ? (chatToUpdate.unread_count || 0) + 1 
+            : (chatToUpdate.unread_count || 0)
+        };
+        
+        // Перемещаем наверх и сортируем
+        const filtered = prev.filter((_, i) => i !== idx);
+        return [updatedChat, ...filtered].sort((a, b) => {
+          const timeA = a.last_message?.timestamp ? new Date(a.last_message.timestamp).getTime() : 0;
+          const timeB = b.last_message?.timestamp ? new Date(b.last_message.timestamp).getTime() : 0;
+          return timeB - timeA;
         });
-        // Исключаем себя и уже выбранных пользователей
-        const filtered = response.data.filter(
-          u => u.id !== currentUserId && !selectedUsers.some(s => s.id === u.id)
-        );
-        setSearchResults(filtered);
-      } catch (err) {
-        console.error('Search failed:', err);
-        setSearchResults([]);
-      } finally {
-        setIsSearching(false);
+      });
+    });
+    
+    return () => unsubscribe();
+  }, [subscribeToChatList, currentUserId]);
+
+  // === 🔥 Подписка на события прочтения (обновление только unread_count) ===
+  useEffect(() => {
+    // Подписываемся на все чаты — при получении события обновляем нужный
+    const unsubscribe = subscribeToMessagesRead('*', (data) => {
+      setChats(prev => prev.map(chat => {
+        // Обновляем только если событие для этого чата И прочитал НЕ я
+        if (data.reader_id !== currentUserId) {
+          return { ...chat, unread_count: 0 };
+        }
+        return chat;
+      }));
+    });
+    
+    return () => unsubscribe();
+  }, [subscribeToMessagesRead, currentUserId]);
+
+  // === Обработчик выбора чата ===
+  const handleChatSelect = useCallback((chatId: number, unreadCount?: number) => {
+    // Локально сбрасываем счётчик для мгновенного отклика
+    if (unreadCount && unreadCount > 0) {
+      setChats(prev => prev.map(c => 
+        c.id === chatId ? { ...c, unread_count: 0 } : c
+      ));
+    }
+    
+    navigate(`/chats/chat/${chatId}`);
+    
+    // Уведомляем бэкенд о прочтении
+    setTimeout(() => {
+      if (connectionStatus === 'open') {
+        markMessagesRead(chatId);
       }
-    }, 300);
+    }, 100);
+  }, [navigate, markMessagesRead, connectionStatus]);
 
-    return () => clearTimeout(timer);
-  }, [searchQuery, isModalOpen, modalMode, currentUserId, selectedUsers]);
-
-  // 🔥 Хендлеры модального окна
-  const openCreateModal = (mode: 'personal' | 'group') => {
-    setModalMode(mode);
+  // === Хендлеры модалки ===
+  const handleOpenModal = (mode: 'personal' | 'group') => {
     setIsModalOpen(true);
-    setSearchQuery('');
-    setSearchResults([]);
-    setSelectedUsers([]);
-    setGroupName('');
-    setCreateError('');
   };
 
-  const closeCreateModal = () => {
-    setIsModalOpen(false);
-    setModalMode(null);
+  const handleChatCreated = (newChat: Chat) => {
+    setChats(prev => [newChat, ...prev]);
+    navigate(`/chats/chat/${newChat.id}`);
   };
 
-  const toggleUser = (user: UserRead) => {
-    setSelectedUsers(prev => 
-      prev.some(u => u.id === user.id)
-        ? prev.filter(u => u.id !== user.id)
-        : [...prev, user]
-    );
-  };
-
-  // 🔥 Валидация перед созданием
-  const validateCreatePayload = (): string | null => {
-    if (modalMode === 'personal') {
-      if (selectedUsers.length !== 1) {
-        return 'Выберите ровно одного собеседника';
-      }
-    }
-    if (modalMode === 'group') {
-      if (selectedUsers.length < 2) {
-        return 'В группе должно быть минимум 2 участника (кроме вас)';
-      }
-      if (!groupName.trim()) {
-        return 'Введите название группы';
-      }
-    }
-    return null;
-  };
-
-  // 🔥 Создание чата/группы
-  const handleCreateChat = async () => {
-    const error = validateCreatePayload();
-    if (error) {
-      setCreateError(error);
-      return;
-    }
-    setCreateError('');
-
-    try {
-      // 🔥 ВАЖНО: передаём ТОЛЬКО других пользователей!
-      // Бэк сам добавит currentUserId
-      const payload: ChatCreatePayload = {
-        type: modalMode!,
-        name: modalMode === 'group' ? groupName.trim() : undefined,
-        participant_ids: selectedUsers.map(u => u.id),
-      };
-
-      const newChat = await chatAPI.createChat(payload);
-      
-      closeCreateModal();
-      // Обновляем список и переходим в новый чат
-      setChats(prev => [newChat, ...prev]);
-      navigate(`/chats/chat/${newChat.id}`);
-      
-    } catch (err: any) {
-      console.error('Create chat failed:', err);
-      setCreateError(err.response?.data?.detail || 'Не удалось создать чат');
-    }
-  };
-
-  // 🔥 Фильтрация: скрываем уже выбранных из результатов поиска
-  const availableUsers = useMemo(() => 
-    searchResults.filter(u => !selectedUsers.some(s => s.id === u.id)),
-    [searchResults, selectedUsers]
-  );
-
+  // === Рендер ===
   if (loading) return <div className={styles.center}>Загрузка...</div>;
   if (error) return (
     <div className={styles.center}>
@@ -172,7 +149,7 @@ export function ChatList() {
 
   return (
     <div className={styles.container}>
-      {/* Шапка с поиском и кнопкой создания */}
+      {/* Шапка с поиском */}
       <div className={styles.sidebarHeader}>
         <div className={styles.searchBox}>
           <span className={styles.searchIcon}>🔍</span>
@@ -192,56 +169,66 @@ export function ChatList() {
           </div>
         ) : (
           chats.map(chat => {
-            const interlocutor = chat.type === 'personal' 
+            const displayName = getChatTitle(chat, currentUserId);
+            const lastMsg = chat.last_message;
+            const lastMessageText = getChatPreviewText(chat, currentUserId);
+
+            const interlocutor = chat.type === 'personal'
               ? chat.participants.find(p => p.id !== currentUserId)
               : null;
-            const displayName = getChatTitle(chat, currentUserId);
+
+            const isInterlocutorOnline = interlocutor 
+              ? isUserOnline(interlocutor.id) 
+              : false;
             
-            // 🔥 Получаем последнее сообщение (если есть)
-            const lastMsg = chat.last_message;
-            
-            // Формируем текст превью
-            const lastMessageText = lastMsg 
-              ? (lastMsg.sender_id === currentUserId ? 'Вы: ' : '') + lastMsg.text
-              : "Нажмите, чтобы открыть чат";
-            
-            // Форматируем время (если есть сообщение)
             const lastMessageTime = lastMsg?.timestamp
               ? new Date(lastMsg.timestamp).toLocaleTimeString('ru-RU', { 
                   hour: '2-digit', 
                   minute: '2-digit' 
                 })
               : '';
+              
+              const hasUnread = (chat.unread_count || 0) > 0;
             
             return (
               <div
                 key={chat.id}
-                onClick={() => navigate(`/chats/chat/${chat.id}`)}
-                // 🔥 Добавляем класс 'active', если ID совпадает
+                onClick={() => handleChatSelect(chat.id, chat.unread_count)}
                 className={`${styles.chatItem} ${chat.id == activeChatId ? styles.active : ''}`}
               >
-                {/* Аватар */}
                 <div className={styles.avatar}>
                   {displayName.charAt(0).toUpperCase()}
                 </div>
 
-                {/* Контент карточки */}
                 <div className={styles.chatContent}>
                   <div className={styles.chatHeader}>
                     <span className={styles.chatTitle}>{displayName}</span>
-                    {/* 🔥 Показываем время только если есть сообщение */}
-                    {lastMessageTime && (
-                      <span className={styles.chatTime}>{lastMessageTime}</span>
-                    )}
+                    
+                    <div className={styles.headerRight}>
+                      {chat.type === 'personal' && (
+                        <span 
+                          className={`${styles.statusDot} ${isInterlocutorOnline ? styles.online : styles.offline}`}
+                          title={isInterlocutorOnline ? 'В сети' : 'Не в сети'}
+                        />
+                      )}
+                      
+                      {lastMessageTime && (
+                        <span className={styles.chatTime}>{lastMessageTime}</span>
+                      )}
+                    </div>
                   </div>
                   <div className={styles.chatPreview}>
-                    {/* 🔥 Текст последнего сообщения с обрезкой */}
                     <span className={styles.lastMessage} title={lastMessageText}>
                       {lastMessageText.length > 40 
                         ? lastMessageText.slice(0, 40) + '...' 
                         : lastMessageText}
                     </span>
-                    {/* Здесь можно добавить бейдж непрочитанных, если бэк будет возвращать unread_count */}
+
+                    {hasUnread && (
+                      <span className={styles.unreadBadge}>
+                        {(chat.unread_count || 0) > 99 ? '99+' : chat.unread_count}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -250,131 +237,22 @@ export function ChatList() {
         )}
       </div>
 
-      {/* 🔥 Кнопка создания чата (как в ТГ) */}
+      {/* Кнопка создания чата */}
       <button 
         className={styles.createBtn}
-        onClick={() => openCreateModal('personal')}
+        onClick={() => handleOpenModal('personal')}
         title="Новый чат"
       >
         ✎
       </button>
 
-            {/* 🔥 Модальное окно создания чата */}
-      {isModalOpen && (
-        <div className={styles.modalOverlay} onClick={closeCreateModal}>
-          <div className={styles.modalContent} onClick={e => e.stopPropagation()}>
-            {/* Шапка модалки */}
-            <div className={styles.modalHeader}>
-              <h3>{modalMode === 'personal' ? 'Новый чат' : 'Новая группа'}</h3>
-              <button className={styles.modalClose} onClick={closeCreateModal}>×</button>
-            </div>
-
-            {/* 🔥 Переключатель режима: Личный / Группа */}
-            <div className={styles.modeToggle}>
-              <button
-                className={`${styles.toggleBtn} ${modalMode === 'personal' ? styles.toggleBtnActive : ''}`}
-                onClick={() => {
-                  setModalMode('personal');
-                  setSelectedUsers([]); // Очищаем выбор при смене режима
-                  setGroupName('');
-                }}
-              >
-                💬 Личный
-              </button>
-              <button
-                className={`${styles.toggleBtn} ${modalMode === 'group' ? styles.toggleBtnActive : ''}`}
-                onClick={() => {
-                  setModalMode('group');
-                  setSelectedUsers([]); // Очищаем выбор при смене режима
-                  setGroupName('');
-                }}
-              >
-                👥 Группа
-              </button>
-            </div>
-
-            {/* Поле названия для группы */}
-            {modalMode === 'group' && (
-              <input
-                type="text"
-                placeholder="Название группы"
-                value={groupName}
-                onChange={e => setGroupName(e.target.value)}
-                className={styles.groupNameInput}
-              />
-            )}
-
-            {/* Поиск пользователей */}
-            <div className={styles.modalSearch}>
-              <input
-                type="text"
-                placeholder={modalMode === 'personal' ? 'Поиск собеседника...' : 'Поиск участников...'}
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className={styles.modalSearchInput}
-                autoFocus
-              />
-              {isSearching && <span className={styles.searching}>🔍</span>}
-            </div>
-
-            {/* Результаты поиска */}
-            <div className={styles.searchResults}>
-              {availableUsers.map(user => (
-                <div 
-                  key={user.id} 
-                  className={styles.searchResultItem}
-                  onClick={() => toggleUser(user)}
-                >
-                  <span className={styles.userAvatar}>
-                    {user.full_name.charAt(0).toUpperCase()}
-                  </span>
-                  <span>{user.full_name}</span>
-                </div>
-              ))}
-              {searchQuery.length >= 2 && availableUsers.length === 0 && !isSearching && (
-                <div className={styles.noResults}>Ничего не найдено</div>
-              )}
-              {searchQuery.length < 2 && (
-                <div className={styles.noResults}>Введите минимум 2 символа для поиска</div>
-              )}
-            </div>
-
-            {/* Выбранные пользователи */}
-            {selectedUsers.length > 0 && (
-              <div className={styles.selectedUsers}>
-                <strong>Выбрано:</strong>
-                {selectedUsers.map(user => (
-                  <span key={user.id} className={styles.selectedChip}>
-                    {user.full_name}
-                    <button onClick={(e) => { e.stopPropagation(); toggleUser(user); }}>×</button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Ошибка */}
-            {createError && <p className={styles.modalError}>{createError}</p>}
-
-            {/* Кнопки действий */}
-            <div className={styles.modalActions}>
-              <button onClick={closeCreateModal} className={styles.btnSecondary}>
-                Отмена
-              </button>
-              <button 
-                onClick={handleCreateChat} 
-                className={styles.btnPrimary}
-                disabled={
-                  selectedUsers.length === 0 || 
-                  (modalMode === 'group' && !groupName.trim()) ||
-                  (modalMode === 'personal' && selectedUsers.length !== 1)
-                }
-              >
-                Создать
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CreateChatModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onCreate={handleChatCreated}
+        currentUserId={currentUserId}
+        initialMode="personal"
+      />
     </div>
   );
 }
