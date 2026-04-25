@@ -31,7 +31,15 @@ class ConnectionManager:
         # Первый сокет → переход в онлайн
         if len(self.user_sockets[user_id]) == 1:
             self.online_users.add(user_id)
+            # Сообщение всем, что пользователь зашел в сеть
             await self.broadcast_status_update(user_id, "online")
+
+            # Текущему пользователю отправляем список текущих пользователей в сети
+            online_list = [uid for uid in self.online_users if uid != user_id]
+            await self.send_to_user(user_id, {
+                "type": "initial_online_list",
+                "user_ids": online_list
+            })
 
     # 🔥 Сделали асинхронным для корректного await
     async def disconnect(self, user_id: int, ws: WebSocket):
@@ -71,8 +79,8 @@ class ConnectionManager:
     async def broadcast_status_update(self, user_id: int, status: str):
         payload = {"type": "user_status_update", "user_id": user_id, "status": status}
         
-        # 🔥 Рассылаем всем, кроме самого пользователя
-        for uid in list(self.user_sockets.keys()):
+        # Это гарантирует, что сообщение получат только реально активные пользователи
+        for uid in list(self.online_users):
             if uid != user_id:
                 await self.send_to_user(uid, payload)
 
@@ -114,13 +122,13 @@ async def ws_main(
             raw = await ws.receive_text()
             evt = json.loads(raw)
             typ = evt.get("type")
-
+            # Проверка на открытие чата
             if typ == "subscribe_chat":
                 chat_id = evt.get("chat_id")
                 # Проверяем доступ к чату
                 await ChatService.get_chat(chat_id, db, user_id=user_id)
                 await manager.subscribe(user_id, chat_id)
-
+            # Отправка сообщения
             elif typ == "message":
                 chat_id = evt.get("chat_id")
                 text = evt.get("text", "").strip()
@@ -162,6 +170,7 @@ async def ws_main(
                     }
                     for uid in participant_ids:
                         await manager.send_to_user(uid, chat_update)
+            # Статус "Печатает"
             elif typ == "typing":
                 chat_id = evt.get("chat_id")
                 is_typing = evt.get("is_typing", True) # по умолчанию true
@@ -181,6 +190,37 @@ async def ws_main(
                     "user_id": user_id,
                     "is_typing": is_typing
                 }
+                for uid in participant_ids:
+                    await manager.send_to_user(uid, payload)
+            elif typ == "read":
+                chat_id = evt.get("chat_id")
+                up_to_message_id = evt.get("up_to_message_id")
+
+                # Проверяем доступ к чату
+                await ChatService.get_chat(chat_id, db, user_id=user_id)
+
+                # Отмечаем сообщения как прочитанные
+                count, last_read_at = await MessageService.mark_read(
+                    db,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    up_to_message_id=up_to_message_id,
+                )
+
+                # 🔥 Уведомляем ДРУГИХ участников чата — ТОЛЬКО о факте прочтения
+                participant_ids = await ChatService.get_chat_participant_ids(
+                    chat_id, db, exclude_user_id=user_id
+                )
+                
+                # 🔥 Отправляем чистое событие без полей last_message_*
+                payload = {
+                    "type": "messages_read",
+                    "chat_id": chat_id,
+                    "reader_id": user_id,
+                    "count": count,
+                    "last_read_at": last_read_at.isoformat() if last_read_at else None,
+                }
+                
                 for uid in participant_ids:
                     await manager.send_to_user(uid, payload)
 

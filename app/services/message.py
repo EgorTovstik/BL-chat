@@ -84,6 +84,63 @@ class MessageService:
         await db.refresh(msg, attribute_names=['sender'])
         
         return msg, created  # 🔥 Возвращаем кортеж, как ты хотел
+    
+    @staticmethod
+    async def mark_read(
+        db: AsyncSession,
+        user_id: int,
+        chat_id: int,
+        up_to_message_id: Optional[int] = None,  # 🔥 Опционально: если хотим отметить всё до конкретного сообщения
+    ) -> Tuple[int, datetime]:
+        """
+        Отмечает сообщения в чате как прочитанные для текущего пользователя.
+        
+        Аргументы:
+            - db: сессия БД
+            - user_id: ID пользователя, который читает
+            - chat_id: ID чата
+            - up_to_message_id: (опционально) отмечать только сообщения <= этого ID
+            
+        Возвращает:
+            (count, last_read_at): количество отмеченных сообщений и время последнего прочитанного
+        """
+        chat = await MessageService._get_chat_or_404(db, chat_id, user_id)
+        if not chat:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chat not found or access denied"
+            )
+        
+        query = (
+            select(Message)
+            .where(
+                and_(
+                    Message.chat_id == chat_id,
+                    Message.sender_id != user_id,
+                    Message.read == False
+                )
+            )
+        )
+
+        # Если указан конкретный лимит — только сообщения до него
+        if up_to_message_id:
+            query = query.where(Message.id <= up_to_message_id)
+
+        result = await db.execute(query)
+        messages = result.scalars().all()
+
+        if not messages:
+            return 0, datetime.now(timezone.utc)
+        
+        for msg in messages:
+            msg.read = True
+
+        await db.commit()
+
+        # Возвращаем метаданные для фронтенда
+        last_read = max(msg.timestamp for msg in messages)
+        return len(messages), last_read
+        
 
     # ===== Вспомогательные приватные методы =====
 
