@@ -9,10 +9,10 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models import User as AuthUser
+from app.models import User as AuthUser, Attachment
 from app.api.deps import get_current_user_ws
 from app.services import ChatService, MessageService
-from app.schemas import MessageRead
+from app.schemas import MessageRead, AttachmentRead
 
 router = APIRouter(tags=["ws"])
 
@@ -170,6 +170,54 @@ async def ws_main(
                     }
                     for uid in participant_ids:
                         await manager.send_to_user(uid, chat_update)
+            elif typ == "message_with_attachment":
+                chat_id = evt.get("chat_id")
+                text = evt.get("text", "").strip()
+                attachment_data = evt.get("attachment")  # Метаданные из upload-эндпоинта
+                
+                await ChatService.get_chat(chat_id, db, user_id=user_id)
+                
+                # 1. Создаём сообщение
+                msg, created = await MessageService.send_message(
+                    db,
+                    chat_id=chat_id,
+                    sender_id=user_id,
+                    text=text,
+                    client_msg_id=evt.get("client_msg_id"),
+                )
+                
+                # 2. Создаём запись вложения, если есть
+                if attachment_data:
+                    attachment = Attachment(
+                        message_id=msg.id,
+                        filename=attachment_data["filename"],
+                        file_key=attachment_data["file_key"],
+                        file_type=attachment_data["file_type"],
+                        mime_type=attachment_data["mime_type"],
+                        file_size=attachment_data["file_size"],
+                        thumbnail_key=attachment_data.get("thumbnail_key"),
+                    )
+                    db.add(attachment)
+                    await db.commit()
+                    await db.refresh(msg, attribute_names=['attachments'])
+                
+                # 3. Формируем ответ с вложением
+                out = MessageRead.model_validate(msg).model_dump()
+                out["type"] = "new_message"
+                
+                # 🔥 ВАЖНО: добавь client_msg_id, если он был в запросе
+                if evt.get("client_msg_id"):
+                    out["client_msg_id"] = evt["client_msg_id"]
+                
+                if hasattr(msg, 'attachments') and msg.attachments:
+                    out["attachments"] = [
+                        AttachmentRead.model_validate(a).model_dump() 
+                        for a in msg.attachments
+                    ]
+                
+                # 4. Рассылаем подписчикам
+                for subscriber_id in manager.chat_subscribers.get(chat_id, set()):
+                    await manager.send_to_user(subscriber_id, out)
             # Статус "Печатает"
             elif typ == "typing":
                 chat_id = evt.get("chat_id")
