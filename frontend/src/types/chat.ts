@@ -7,6 +7,7 @@ export interface Chat {
     type: 'personal' | 'group';
     participants: UserRead[];
     last_message?: Message | null;
+    unread_count?: number;
 }
 
 export interface ChatCreatePayload {
