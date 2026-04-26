@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
+import { Attachment } from '../types/messages';
 
 type MessageData = {
   id: number;
@@ -65,6 +66,9 @@ type ChatSocketContextType = {
   ) => () => void;
   
   markMessagesRead: (chatId: number, upToMessageId?: number) => boolean;
+  // Файлы
+  uploadFile: (chatId: number, file: File) => Promise<Attachment | null>;
+  sendAttachmentMessage: (chatId: number, text: string, attachment: Attachment, client_msg_id?: string) => boolean;
 };
 
 const ChatSocketContext = createContext<ChatSocketContextType | null>(null);
@@ -403,6 +407,38 @@ export function ChatSocketProvider({
     }
   }, []);
 
+  const uploadFile = useCallback(async (chatId: number, file: File): Promise<Attachment | null> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/files/chats/${chatId}/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenRef.current}` },
+        body: formData,
+      });
+      if (!res.ok) throw new Error('Upload failed');
+      return await res.json();
+    } catch (e) {
+      console.error('File upload error:', e);
+      return null;
+    }
+  }, []);
+
+  const sendAttachmentMessage = useCallback((chatId: number, text: string, attachment: Attachment, client_msg_id?: string): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+
+    ws.send(JSON.stringify({
+      type: 'message_with_attachment',
+      chat_id: chatId,
+      text,
+      attachment,
+      client_msg_id: client_msg_id || `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    }));
+    return true;
+  }, []);
+
   const value = {
     subscribeToChat,
     subscribeToChatList,
@@ -413,8 +449,10 @@ export function ChatSocketProvider({
     isUserOnline,
     subscribeToUserStatus,
     subscribeToTyping,
-    subscribeToMessagesRead, // 🔥 Добавьте эту строку
+    subscribeToMessagesRead,
     markMessagesRead,
+    uploadFile,
+    sendAttachmentMessage,
   };
 
   return (

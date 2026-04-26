@@ -1,2 +1,0 @@
-python -m app.main
-npm run dev

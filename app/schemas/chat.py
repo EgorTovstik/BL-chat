@@ -24,5 +24,6 @@ class ChatRead(ChatBase):
     id: int
     participants: List[UserRead] = []
     last_message: Optional[MessageRead] = None
+    unread_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)

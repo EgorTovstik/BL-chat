@@ -1,7 +1,7 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status, Security
-from sqlalchemy import select, and_, func, distinct
+from fastapi import APIRouter, Depends, HTTPException, status, Security, Query
+from sqlalchemy import select, and_, func, distinct, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timezone
@@ -108,46 +108,75 @@ async def list_chats(
     chats_result = await db.execute(chats_query)
     chats = chats_result.scalars().unique().all()
 
-    if not chats:
-        return []
+    return await ChatService.get_chats_with_metadata(db, chats, current_user.id)
 
-    chat_ids = [chat.id for chat in chats]
-
-    # 2️⃣ Загружаем ПОСЛЕДНИЕ сообщения для этих чатов (1 запрос)
-    # Сортируем по chat_id и timestamp DESC → первые в группе будут последними сообщениями
-    last_msg_query = (
-        select(Message)
-        .where(Message.chat_id.in_(chat_ids))
-        .order_by(Message.chat_id, Message.timestamp.desc())
-        .options(selectinload(Message.sender))  # 🔥 Важно для валидации MessageRead
+@router.get(
+    "/search",
+    response_model=List[ChatRead],
+    summary="search chat"
+)
+async def search_chat(
+    chat_name: str = Query(
+        ...,
+        min_length=2,
+        max_length=50,
+        description="Поисковый запрос (мин. 2 символа)"
+    ),
+    limit: int = Query(
+        20,
+        ge=1,
+        le=50,
+        description="Максимум результатов"
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Security(
+        get_current_user, 
+        scopes=["chats:read"] 
     )
-    msg_result = await db.execute(last_msg_query)
-    all_messages = msg_result.scalars().all()
-
-    # Сопоставляем последнее сообщение каждому чату (берём первое совпадение = самое новое)
-    last_messages_map = {}
-    for msg in all_messages:
-        if msg.chat_id not in last_messages_map:
-            last_messages_map[msg.chat_id] = msg
-
-    # 3️⃣ Сортируем чаты по времени последнего сообщения (на уровне объектов)
-    # Чаты без сообщений — в конец
-    chats.sort(
-        key=lambda c: last_messages_map.get(c.id).timestamp if last_messages_map.get(c.id) else datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True
+):
+    # Базовый запрос: только чаты текущего пользователя
+    base_query = (
+        select(Chat)
+        .join(Chat.participants)  # 🔥 Используем relationship, а не chat_members напрямую
+        .where(AuthUser.id == current_user.id)
+        .options(
+            selectinload(Chat.participants),
+        )
+        .distinct()
     )
-
-    # 4️⃣ Теперь собираем ответ (уже отсортированный)
-    response_data = []
-    for chat in chats:
-        # Валидируем чат через Pydantic
-        chat_dict = ChatRead.model_validate(chat).model_dump()
-        # Добавляем последнее сообщение (валидируем через Pydantic)
-        raw_msg = last_messages_map.get(chat.id)
-        chat_dict["last_message"] = MessageRead.model_validate(raw_msg) if raw_msg else None
-        response_data.append(chat_dict)
-
-    return response_data
+    
+    # Формируем условие поиска
+    search_term = f"%{chat_name.strip()}%"  # ilike регистронезависимый
+    
+    # Для групповых чатов: ищем по Chat.name
+    group_condition = and_(
+        Chat.type == "group",
+        Chat.name.ilike(search_term)
+    )
+    
+    # Для личных чатов: ищем по имени собеседника (не текущего пользователя)
+    personal_condition = and_(
+        Chat.type == "personal",
+        select(AuthUser)
+        .join(Chat.participants) 
+        .where(
+            and_(
+                Chat.id == Chat.id,  
+                AuthUser.id != current_user.id,
+                AuthUser.full_name.ilike(search_term)
+            )
+        )
+        .correlate(Chat) 
+        .exists()
+    )
+    
+    # Применяем фильтры и лимит
+    query = base_query.where(or_(group_condition, personal_condition)).limit(limit)
+    
+    result = await db.execute(query)
+    chats = result.scalars().unique().all()  # .unique() на случай дублей из-за join
+    
+    return await ChatService.get_chats_with_metadata(db, chats, current_user.id)
 
 @router.get(
     "/{chat_id}"
@@ -161,16 +190,6 @@ async def get_chat(
 ):
     try:
         chat = await ChatService.get_chat(chat_id, db, user_id=current_user.id)
-        # query = (
-        #     select(Chat)
-        #     .where(Chat.id == chat_id)
-        #     .join(Chat.participants)
-        #     .where(AuthUser.id == current_user.id)
-        #     .options(selectinload(Chat.participants))
-        # )
-
-        # result = await db.execute(query)
-        # chat = result.scalars().first()
     except ValueError as e:
         detail = str(e)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
