@@ -29,7 +29,8 @@ export function ChatList() {
     subscribeToMessagesRead,
     isUserOnline,
     markMessagesRead,
-    connectionStatus 
+    connectionStatus,
+    subscribeToNewChat 
   } = useChatSocket();
 
   // Реф для отслеживания, был ли уже синк после подключения сокета
@@ -166,6 +167,18 @@ export function ChatList() {
     
     return () => unsubscribe();
   }, [subscribeToMessagesRead, currentUserId, searchResults]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToNewChat((newChat) => {
+      setChats(prev => {
+        // 🔥 Защита от дублей (если создатель тоже получит событие)
+        if (prev.some(c => c.id === newChat.id)) return prev;
+        return [newChat, ...prev];
+      });
+    });
+    
+    return () => unsubscribe();
+  }, [subscribeToNewChat]);
 
   // === 🔥 Дебаунс поиска (300мс после последнего ввода) ===
   useEffect(() => {

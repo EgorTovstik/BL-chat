@@ -1,16 +1,20 @@
+import logging
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Security, Query
 from sqlalchemy import select, and_, func, distinct, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from datetime import datetime, timezone
 
 from app.schemas import ChatRead, ChatCreate, MessageRead
 from app.models import User as AuthUser, Chat, Message, chat_members
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.services import ChatService
+
+from app.core.ws_manager import manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chats"])
 
@@ -86,7 +90,20 @@ async def create_chat(
         code = status.HTTP_404_NOT_FOUND if detail.startswith("Users not found") else status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=code, detail=detail)
     
-    return ChatRead.model_validate(chat)
+    # Сериализуем чат для отправки
+    chat_dict = ChatRead.model_validate(chat).model_dump()
+    # Уведомим участников через websocket о создании нового чата
+    for participant in chat.participants:
+        try:
+            await manager.send_to_user(participant.id, {
+                "type": "new_chat",
+                "chat": chat_dict
+            })
+        except Exception as e:
+            # Логируем, но НЕ прерываем создание чата (WS может быть недоступен)
+            logger.warning(f"⚠️ WS notification failed for user {participant.id}: {e}")
+
+    return chat_dict
 
 @router.get(
     "/",
