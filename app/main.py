@@ -1,4 +1,4 @@
-
+import os
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,9 +25,11 @@ app = FastAPI(
     title="Chatus"
 )
 app.include_router(api_router, prefix="/api/v1")
+
+allow_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Разрешаем только локальный дев-сервер
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,5 +38,7 @@ app.add_middleware(
 if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
-        reload=True,
+        host=os.getenv("UVICORN_HOST", "127.0.0.1"),
+        port=int(os.getenv("UVICORN_PORT", 8000)),
+        reload=os.getenv("UVICORN_RELOAD", "true").lower() == "true",
     )
