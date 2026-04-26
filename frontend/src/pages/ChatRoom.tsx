@@ -20,24 +20,18 @@ export function ChatRoom() {
   
   // 🔥 НОВОЕ: Список пользователей, которые печатают в этом чате
   const [typingUsers, setTypingUsers] = useState<Set<number>>(new Set());
-
-  // Отправка сообщений и файлов
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploadingFile, setUploadingFile] = useState<File | null>(null);
-  const [isDragging, setIsDragging] = useState(false); // 🔥 Для drag-and-drop
   
+  // 🔥 Добавили новые функции из контекста
   const { 
     subscribeToChat, 
     sendMessage, 
     sendTypingStatus,
-    markMessagesRead,           
-    subscribeToMessagesRead,    
+    markMessagesRead,           // 🔥 Маркер прочтения
+    subscribeToMessagesRead,    // 🔥 Подписка на события прочтения
     connectionStatus, 
     isUserOnline, 
     subscribeToUserStatus, 
-    subscribeToTyping,
-    uploadFile,
-    sendAttachmentMessage,
+    subscribeToTyping 
   } = useChatSocket();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -185,13 +179,11 @@ export function ChatRoom() {
       
       log('info', '📩 Received new_message', { 
         id: serverMessage.id, 
-        client_msg_id: serverMessage.client_msg_id,
-        hasAttachments: !!serverMessage.attachments,
-        attachmentsCount: serverMessage.attachments?.length
+        client_msg_id: serverMessage.client_msg_id 
       });
       
       setMessages((prev) => {
-        // 1. Заменяем оптимистичное сообщение на реальное (по client_msg_id)
+        // 1. Заменяем оптимистичное сообщение на реальное
         const optimisticByIdx = prev.findIndex(m => 
           m.isOptimistic && 
           m.client_msg_id && 
@@ -201,41 +193,11 @@ export function ChatRoom() {
 
         if (optimisticByIdx !== -1) {
           const newMessages = [...prev];
-          // 🔥 FIX: сохраняем attachments из оптимистичного, если сервер не прислал
-          newMessages[optimisticByIdx] = { 
-            ...serverMessage, 
-            isOptimistic: false,
-            attachments: serverMessage.attachments?.length > 0 
-              ? serverMessage.attachments 
-              : prev[optimisticByIdx].attachments
-          };
+          newMessages[optimisticByIdx] = { ...serverMessage, isOptimistic: false };
           return newMessages;
         }
 
-        // 🔥 1.5. Фолбэк: поиск по вложениям (для файлов, если client_msg_id не совпал)
-        if (serverMessage.attachments?.length > 0) {
-          const optimisticByAttachment = prev.findIndex(m => 
-            m.isOptimistic &&
-            m.sender_id === serverMessage.sender_id &&
-            m.attachments?.[0]?.file_key === serverMessage.attachments[0]?.file_key &&
-            Math.abs(new Date(m.timestamp).getTime() - new Date(serverMessage.timestamp).getTime()) < 5000
-          );
-          
-          if (optimisticByAttachment !== -1) {
-            const newMessages = [...prev];
-            // 🔥 FIX: сохраняем attachments из оптимистичного
-            newMessages[optimisticByAttachment] = { 
-              ...serverMessage, 
-              isOptimistic: false,
-              attachments: serverMessage.attachments?.length > 0 
-                ? serverMessage.attachments 
-                : prev[optimisticByAttachment].attachments
-            };
-            return newMessages;
-          }
-        }
-
-        // 2. Фолбэк: поиск по контенту + времени (для текстовых сообщений)
+        // 2. Фолбэк: поиск по контенту + времени
         const serverTime = new Date(serverMessage.timestamp).getTime();
         const optimisticByContent = prev.findIndex(m => 
           m.isOptimistic &&
@@ -250,7 +212,7 @@ export function ChatRoom() {
           return newMessages;
         }
 
-        // 3. Защита от дублей по ID
+        // 3. Защита от дублей
         if (prev.some(m => m.id === serverMessage.id)) {
           return prev;
         }
@@ -340,106 +302,6 @@ export function ChatRoom() {
     
   }, [inputText, currentUserId, sendTypingStatus]);
 
-  // 🔥 Обработка выбора файла через скрепку
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !chatId) return;
-
-    setUploadingFile(file);
-    const attachment = await uploadFile(Number(chatId), file);
-    
-    if (!attachment) {
-      setUploadingFile(null);
-      alert('Не удалось загрузить файл');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
-    const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    
-    // Оптимистичное добавление
-    const optimisticMsg: MessageState = {
-      id: -Date.now(),
-      chat_id: Number(chatId),
-      sender_id: currentUserId!,
-      text: '',
-      timestamp: new Date().toISOString(),
-      read: true,
-      client_msg_id,
-      isOptimistic: true,
-      attachments: [{ ...attachment, id: -1, message_id: -1 }]
-    };
-    setMessages(prev => [...prev, optimisticMsg]);
-
-    const sent = sendAttachmentMessage(Number(chatId), '', attachment, client_msg_id);
-    if (!sent) {
-      setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
-      alert('Отправка не удалась');
-    }
-
-    setUploadingFile(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  // 🔥 Обработчики Drag & Drop (как в Телеграме)
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!isDragging) setIsDragging(true);
-  }, [isDragging]);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // Проверяем, что курсор ушёл за пределы контейнера
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
-      setIsDragging(false);
-    }
-  }, []);
-
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    
-    const file = e.dataTransfer.files?.[0];
-    if (!file || !chatId) return;
-    
-    // Тот же поток, что и при выборе через скрепку
-    setUploadingFile(file);
-    const attachment = await uploadFile(Number(chatId), file);
-    
-    if (!attachment) {
-      setUploadingFile(null);
-      alert('Не удалось загрузить файл');
-      return;
-    }
-
-    const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    
-    const optimisticMsg: MessageState = {
-      id: -Date.now(),
-      chat_id: Number(chatId),
-      sender_id: currentUserId!,
-      text: '',
-      timestamp: new Date().toISOString(),
-      read: true,
-      client_msg_id,
-      isOptimistic: true,
-      attachments: [{ ...attachment, id: -1, message_id: -1 }]
-    };
-    setMessages(prev => [...prev, optimisticMsg]);
-
-    const sent = sendAttachmentMessage(Number(chatId), '', attachment, client_msg_id);
-    if (!sent) {
-      setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
-      alert('Отправка не удалась');
-    }
-
-    setUploadingFile(null);
-  }, [chatId, currentUserId, uploadFile, sendAttachmentMessage]);
-
   useEffect(() => {
     handleTyping();
   }, [inputText, handleTyping]);
@@ -464,7 +326,7 @@ export function ChatRoom() {
   
   // Отправка сообщения
   const handleSend = useCallback(() => {
-    if (!inputText.trim() || !chatIdRef.current || !currentUserId || uploadingFile) return;
+    if (!inputText.trim() || !chatIdRef.current || !currentUserId) return;
 
     const numericChatId = chatIdRef.current;
     const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -498,7 +360,7 @@ export function ChatRoom() {
       log('error', 'Failed to send message via WebSocket');
       setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
     }
-  }, [inputText, currentUserId, sendMessage, sendTypingStatus, uploadingFile]);
+  }, [inputText, currentUserId, sendMessage, sendTypingStatus]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -548,12 +410,7 @@ export function ChatRoom() {
   const currentStatus = statusMap[connectionStatus];
 
   return (
-    <div 
-      className={styles.container}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+    <div className={styles.container}>
       {/* Шапка чата */}
       <div className={styles.header}>
         <div className={styles.headerAvatar}>
@@ -615,46 +472,6 @@ export function ChatRoom() {
                     {senderName}
                   </div>
                   {msg.text}
-                  
-                  {/* 🔥 Отображение вложений */}
-                  {msg.attachments?.map(att => {
-                    const getFileUrl = (key: string) => `http://localhost:8000/api/v1/files/${key}`;
-                    const formatSize = (b: number) => 
-                      b < 1024 ? `${b} B` : b < 1048576 ? `${(b/1024).toFixed(1)} KB` : `${(b/1048576).toFixed(1)} MB`;
-                    
-                    if (att.file_type === 'image') {
-                      return (
-                        <div key={att.id} className={styles.imageAttachment}>
-                          <img 
-                            src={getFileUrl(att.thumbnail_key || att.file_key)} 
-                            alt={att.filename}
-                            className={styles.previewImg}
-                            onClick={() => window.open(getFileUrl(att.file_key), '_blank')}
-                          />
-                          <span className={styles.fileName}>{att.filename}</span>
-                        </div>
-                      );
-                    }
-                    
-                    return (
-                      <a 
-                        key={att.id}
-                        href={getFileUrl(att.file_key)} 
-                        target="_blank" 
-                        rel="noopener" 
-                        className={styles.fileAttachment}
-                      >
-                        <span className={styles.fileIcon}>
-                          {att.file_type === 'document' ? '📄' : att.file_type === 'audio' ? '🎵' : '📎'}
-                        </span>
-                        <div className={styles.fileMeta}>
-                          <span className={styles.fileName}>{att.filename}</span>
-                          <span className={styles.fileSize}>{formatSize(att.file_size)}</span>
-                        </div>
-                      </a>
-                    );
-                  })}
-                  
                   <div className={styles.messageMeta}>
                     {time}
                     {isMyMessage && !msg.isOptimistic && (
@@ -688,63 +505,32 @@ export function ChatRoom() {
         </div>
       )}
 
-      {/* 🔥 Оверлей при перетаскивании файла (как в ТГ) */}
-      {isDragging && (
-        <div className={styles.dragOverlay}>
-          <div className={styles.dragOverlayContent}>
-            <span className={styles.dragIcon}>📎</span>
-            <span className={styles.dragText}>Отпустите файл для отправки</span>
-          </div>
-        </div>
-      )}
-
-      {/* Поле ввода — новая структура со скрепкой внутри */}
+      {/* Поле ввода */}
       <div className={styles.inputArea}>
-        {/* 🔥 Скрепка ВНУТРИ, слева от поля */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploadingFile !== null || connectionStatus !== 'open'}
-          className={styles.attachBtn}
-          title="Прикрепить файл"
-        >
-          {uploadingFile ? '⏳' : '📎'}
-        </button>
-        
         <input
           type="text"
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Написать сообщение..."
-          disabled={connectionStatus !== 'open' || uploadingFile !== null}
+          disabled={connectionStatus !== 'open'}
           className={styles.input}
           style={{
-            opacity: connectionStatus === 'open' && !uploadingFile ? 1 : 0.6,
+            opacity: connectionStatus === 'open' ? 1 : 0.6,
           }}
         />
-        
         <button 
           onClick={handleSend} 
-          disabled={connectionStatus !== 'open' || !inputText.trim() || uploadingFile !== null}
+          disabled={connectionStatus !== 'open' || !inputText.trim()}
           className={styles.sendBtn}
           style={{
-            opacity: (connectionStatus === 'open' && inputText.trim() && !uploadingFile) ? 1 : 0.5,
-            cursor: (connectionStatus === 'open' && inputText.trim() && !uploadingFile) ? 'pointer' : 'not-allowed',
+            opacity: (connectionStatus === 'open' && inputText.trim()) ? 1 : 0.5,
+            cursor: (connectionStatus === 'open' && inputText.trim()) ? 'pointer' : 'not-allowed',
           }}
         >
           ➤
         </button>
       </div>
-
-      {/* Скрытый input для файла */}
-      <input
-        type="file"
-        ref={fileInputRef}
-        onChange={handleFileSelect}
-        className={styles.hiddenFileInput}
-        accept="image/*,application/pdf,.doc,.docx,.txt,.mp3,.mp4,.webm"
-      />
     </div>
   );
 }
