@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import type { Message, MessageCreatePayload, MessageState } from '../types/messages';
-import type { Chat } from '../types';
+import type { Chat, Attachment } from '../types';
 import { chatAPI } from '../api/chat';
 import { getChatTitle } from '../utils/chat';
 import { useChatSocket } from '../context/ChatSocketContext';
@@ -15,9 +15,6 @@ export function ChatRoom() {
   const [inputText, setInputText] = useState('');
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   
-  // Статус собеседника онлайн/оффлайн
-  const [isInterlocutorOnline, setIsInterlocutorOnline] = useState(false);
-  
   // 🔥 НОВОЕ: Список пользователей, которые печатают в этом чате
   const [typingUsers, setTypingUsers] = useState<Set<number>>(new Set());
 
@@ -25,6 +22,10 @@ export function ChatRoom() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingFile, setUploadingFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false); // 🔥 Для drag-and-drop
+
+  // Черновик для файлов
+  const [pendingAttachment, setPendingAttachment] = useState<Attachment | null>(null);
+  const [pendingClientMsgId, setPendingClientMsgId] = useState<string | null>(null);
   
   const { 
     subscribeToChat, 
@@ -117,24 +118,13 @@ export function ChatRoom() {
     hasMarkedReadRef.current = false;
   }, [chatId]);
 
-  // Подписка на статус собеседника (онлайн/оффлайн)
-  useEffect(() => {
-    if (!chatInfo || !currentUserId) return;
+  const interlocutor = chatInfo?.type === 'personal'
+    ? chatInfo.participants.find(p => p.id !== currentUserId)
+    : null;
 
-    const interlocutor = chatInfo.type === 'personal'
-      ? chatInfo.participants.find(p => p.id !== currentUserId)
-      : null;
-
-    if (interlocutor) {
-      setIsInterlocutorOnline(isUserOnline(interlocutor.id));
-      const unsubscribe = subscribeToUserStatus(interlocutor.id, (online) => {
-        setIsInterlocutorOnline(online);
-      });
-      return () => unsubscribe();
-    } else {
-      setIsInterlocutorOnline(false);
-    }
-  }, [chatInfo, currentUserId, isUserOnline, subscribeToUserStatus]);
+  const isInterlocutorOnline = interlocutor 
+    ? isUserOnline(interlocutor.id)  // 🔥 Прямой вызов — всегда актуально!
+    : false;
 
   // 🔥 НОВОЕ: Подписка на события "печатает" для текущего чата
   useEffect(() => {
@@ -355,33 +345,19 @@ export function ChatRoom() {
       return;
     }
 
-    const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    // 🔥 FIX: НЕ отправляем сразу, а сохраняем в черновик
+    setPendingAttachment(attachment);
+    setPendingClientMsgId(`client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
     
-    // Оптимистичное добавление
-    const optimisticMsg: MessageState = {
-      id: -Date.now(),
-      chat_id: Number(chatId),
-      sender_id: currentUserId!,
-      text: '',
-      timestamp: new Date().toISOString(),
-      read: true,
-      client_msg_id,
-      isOptimistic: true,
-      attachments: [{ ...attachment, id: -1, message_id: -1 }]
-    };
-    setMessages(prev => [...prev, optimisticMsg]);
-
-    const sent = sendAttachmentMessage(Number(chatId), '', attachment, client_msg_id);
-    if (!sent) {
-      setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
-      alert('Отправка не удалась');
-    }
-
     setUploadingFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    
+    // 🔥 Фокус на поле ввода, чтобы пользователь сразу мог добавить текст
+    const input = document.querySelector(`.${styles.input}`) as HTMLInputElement;
+    input?.focus();
   };
 
-  // 🔥 Обработчики Drag & Drop (как в Телеграме)
+  // 🔥 Обработчики Drag & Drop (как в Телеграме) — 🔥 ИСПРАВЛЕНО
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -398,6 +374,7 @@ export function ChatRoom() {
     }
   }, []);
 
+  // 🔥 FIX: handleDrop теперь использует pendingAttachment, как handleFileSelect
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -406,7 +383,6 @@ export function ChatRoom() {
     const file = e.dataTransfer.files?.[0];
     if (!file || !chatId) return;
     
-    // Тот же поток, что и при выборе через скрепку
     setUploadingFile(file);
     const attachment = await uploadFile(Number(chatId), file);
     
@@ -416,29 +392,16 @@ export function ChatRoom() {
       return;
     }
 
-    const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    // 🔥 FIX: Сохраняем в черновик, НЕ отправляем сразу
+    setPendingAttachment(attachment);
+    setPendingClientMsgId(`client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
     
-    const optimisticMsg: MessageState = {
-      id: -Date.now(),
-      chat_id: Number(chatId),
-      sender_id: currentUserId!,
-      text: '',
-      timestamp: new Date().toISOString(),
-      read: true,
-      client_msg_id,
-      isOptimistic: true,
-      attachments: [{ ...attachment, id: -1, message_id: -1 }]
-    };
-    setMessages(prev => [...prev, optimisticMsg]);
-
-    const sent = sendAttachmentMessage(Number(chatId), '', attachment, client_msg_id);
-    if (!sent) {
-      setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
-      alert('Отправка не удалась');
-    }
-
     setUploadingFile(null);
-  }, [chatId, currentUserId, uploadFile, sendAttachmentMessage]);
+    
+    // 🔥 Фокус на поле ввода
+    const input = document.querySelector(`.${styles.input}`) as HTMLInputElement;
+    input?.focus();
+  }, [chatId, uploadFile]);
 
   useEffect(() => {
     handleTyping();
@@ -462,12 +425,44 @@ export function ChatRoom() {
     };
   }, [sendTypingStatus]);
   
-  // Отправка сообщения
+  // 🔥 FIX: Отправка сообщения — теперь можно отправить файл без текста
   const handleSend = useCallback(() => {
-    if (!inputText.trim() || !chatIdRef.current || !currentUserId || uploadingFile) return;
-
+    if (!chatIdRef.current || !currentUserId) return;
+    
     const numericChatId = chatIdRef.current;
-    const client_msg_id = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const client_msg_id = pendingClientMsgId || `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    
+    // 🔥 Если есть черновик с вложением — отправляем его + текст (текст может быть пустым)
+    if (pendingAttachment) {
+      const optimisticMsg: MessageState = {
+        id: -Date.now(),
+        chat_id: numericChatId,
+        sender_id: currentUserId,
+        text: inputText,  // Может быть пустым
+        timestamp: new Date().toISOString(),
+        read: true,
+        client_msg_id,
+        isOptimistic: true,
+        attachments: [{ ...pendingAttachment, id: -1, message_id: -1 }]
+      };
+      setMessages(prev => [...prev, optimisticMsg]);
+      
+      // Отправка через сокет
+      const sent = sendAttachmentMessage(numericChatId, inputText, pendingAttachment, client_msg_id);
+      if (!sent) {
+        setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
+        alert('Отправка не удалась');
+      }
+      
+      // 🔥 Сброс черновика
+      setPendingAttachment(null);
+      setPendingClientMsgId(null);
+      setInputText('');
+      return;
+    }
+    
+    // 🔥 Обычная отправка текста (если нет вложения)
+    if (!inputText.trim()) return;
     
     const optimisticMessage: MessageState = {
       id: -Date.now(),
@@ -481,24 +476,15 @@ export function ChatRoom() {
     };
 
     setMessages(prev => [...prev, optimisticMessage]);
-    setInputText('');
     
-    if (isCurrentlyTypingRef.current) {
-      sendTypingStatus(numericChatId, false);
-      isCurrentlyTypingRef.current = false;
-    }
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = null;
-    }
-
     const sent = sendMessage(numericChatId, inputText, client_msg_id);
-    
     if (!sent) {
       log('error', 'Failed to send message via WebSocket');
       setMessages(prev => prev.filter(m => m.client_msg_id !== client_msg_id));
     }
-  }, [inputText, currentUserId, sendMessage, sendTypingStatus, uploadingFile]);
+    
+    setInputText('');
+  }, [inputText, currentUserId, sendMessage, sendAttachmentMessage, pendingAttachment, pendingClientMsgId]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -698,6 +684,36 @@ export function ChatRoom() {
         </div>
       )}
 
+      {/* 🔥 Индикатор прикреплённого файла (перед полем ввода) */}
+      {pendingAttachment && (
+        <div className={styles.pendingAttachment}>
+          <div className={styles.pendingAttachmentPreview}>
+            {pendingAttachment.file_type === 'image' ? (
+              <img 
+                src={`http://localhost:8000/api/v1/files/${pendingAttachment.thumbnail_key || pendingAttachment.file_key}`} 
+                alt={pendingAttachment.filename}
+                className={styles.pendingImg}
+              />
+            ) : (
+              <span className={styles.pendingFileIcon}>📎</span>
+            )}
+            <span className={styles.pendingFileName}>
+              {pendingAttachment.filename}
+            </span>
+            <button 
+              onClick={() => {
+                setPendingAttachment(null);
+                setPendingClientMsgId(null);
+              }}
+              className={styles.pendingRemoveBtn}
+              title="Удалить вложение"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Поле ввода — новая структура со скрепкой внутри */}
       <div className={styles.inputArea}>
         {/* 🔥 Скрепка ВНУТРИ, слева от поля */}
@@ -724,13 +740,18 @@ export function ChatRoom() {
           }}
         />
         
+        {/* 🔥 FIX: Кнопка активна, если есть текст ИЛИ прикреплён файл */}
         <button 
           onClick={handleSend} 
-          disabled={connectionStatus !== 'open' || !inputText.trim() || uploadingFile !== null}
+          disabled={
+            connectionStatus !== 'open' || 
+            uploadingFile !== null || 
+            (!inputText.trim() && !pendingAttachment)  // 🔥 Разрешаем отправку файла без текста
+          }
           className={styles.sendBtn}
           style={{
-            opacity: (connectionStatus === 'open' && inputText.trim() && !uploadingFile) ? 1 : 0.5,
-            cursor: (connectionStatus === 'open' && inputText.trim() && !uploadingFile) ? 'pointer' : 'not-allowed',
+            opacity: (connectionStatus === 'open' && !uploadingFile && (inputText.trim() || pendingAttachment)) ? 1 : 0.5,
+            cursor: (connectionStatus === 'open' && !uploadingFile && (inputText.trim() || pendingAttachment)) ? 'pointer' : 'not-allowed',
           }}
         >
           ➤

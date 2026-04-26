@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -11,6 +12,8 @@ from app.core.security import verify_password
 
 from app.models import User as UserModel
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["auth"])
 
 @router.post("/token")
@@ -18,6 +21,7 @@ async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
         db: AsyncSession = Depends(get_db),
 ):
+    logger.debug("start login_for_access_token")
     query = await db.execute(select(UserModel).where(UserModel.username == form_data.username))
     user = query.scalar_one_or_none()
     if not user or not verify_password(form_data.password, user.password):
@@ -41,5 +45,6 @@ async def login_for_access_token(
     }
     token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
+    logger.debug("end login_for_access_token")
     return {"access_token": token, "token_type": "bearer"}
 

@@ -11,3 +11,7 @@ from .message import (
 from .storage import (
     StorageService
 )
+
+from .ws import (
+    WebSocketService
+)
