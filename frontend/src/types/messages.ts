@@ -1,6 +1,21 @@
 import type { UserRead } from './index'
 
 // То, что приходит от сервера (WebSocket + REST)
+// Типы файлов
+export type FileType = 'image' | 'document' | 'audio' | 'video' | 'other';
+
+export interface Attachment {
+  id: number;
+  message_id: number;
+  filename: string;
+  file_key: string;
+  file_type: FileType;
+  mime_type: string;
+  file_size: number;
+  thumbnail_key: string | null;
+  uploaded_at: string;
+}
+
 export interface Message {
   id: number;
   chat_id: number;
@@ -9,6 +24,7 @@ export interface Message {
   timestamp: string;
   read: boolean;
   client_msg_id?: string; // 🔥 Добавили для идемпотентности
+  attachments?: Attachment[];
   sender?: UserRead;
 }
 

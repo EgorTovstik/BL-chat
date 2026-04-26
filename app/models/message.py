@@ -20,5 +20,7 @@ class Message(Base):
     client_msg_id: Mapped[str] = mapped_column(String(36), nullable=True, index=True)
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Связи
     chat = relationship('Chat', back_populates='messages')
     sender = relationship('User', back_populates='messages')
+    attachments = relationship('Attachment', back_populates='message', cascade='all, delete-orphan', lazy='selectin')

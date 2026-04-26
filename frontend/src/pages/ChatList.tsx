@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chatAPI } from '../api/chat';
 import { authAPI } from '../api/auth';
@@ -15,17 +15,25 @@ export function ChatList() {
   const [error, setError] = useState('');
   
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // 🔥 Состояние поиска
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Chat[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
   
   const navigate = useNavigate();
   const { id: activeChatId } = useParams<{ id: string }>();
   
   const { 
     subscribeToChatList, 
-    subscribeToMessagesRead, // 🔥 Новая подписка
+    subscribeToMessagesRead,
     isUserOnline,
     markMessagesRead,
     connectionStatus 
   } = useChatSocket();
+
+  // Реф для отслеживания, был ли уже синк после подключения сокета
+  const hasSyncedAfterConnectRef = useRef(false);
 
   // === Загрузка начальных данных ===
   useEffect(() => {
@@ -55,14 +63,53 @@ export function ChatList() {
     loadData();
   }, [navigate]);
 
+  // === 🔥 Синхронизация чатов после подключения WebSocket ===
+  useEffect(() => {
+    if (connectionStatus === 'open' && !hasSyncedAfterConnectRef.current) {
+      hasSyncedAfterConnectRef.current = true;
+      
+      const timer = setTimeout(async () => {
+        try {
+          const freshChats = await chatAPI.getChats();
+          
+          setChats(prev => {
+            const prevMap = new Map(prev.map(c => [c.id, c]));
+            
+            freshChats.forEach(newChat => {
+              const existing = prevMap.get(newChat.id);
+              const prevTime = existing?.last_message?.timestamp;
+              const newTime = newChat.last_message?.timestamp;
+              
+              if (!existing || newTime !== prevTime) {
+                prevMap.set(newChat.id, newChat);
+              }
+            });
+            
+            return Array.from(prevMap.values()).sort((a, b) => {
+              const timeA = a.last_message?.timestamp ? new Date(a.last_message.timestamp).getTime() : 0;
+              const timeB = b.last_message?.timestamp ? new Date(b.last_message.timestamp).getTime() : 0;
+              return timeB - timeA;
+            });
+          });
+        } catch (err) {
+          console.error('Failed to sync chats after WS connect:', err);
+        }
+      }, 500);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [connectionStatus]);
+
   // === Подписка на новые сообщения (обновление превью) ===
+  // 🔥 Обновляем и обычный список, и результаты поиска
   useEffect(() => {
     const unsubscribe = subscribeToChatList((update) => {
-      setChats(prev => {
-        const idx = prev.findIndex(c => c.id === update.chat_id);
-        if (idx === -1) return prev;
+      // Функция для обновления конкретного массива чатов
+      const updateChatList = (prevChats: Chat[]) => {
+        const idx = prevChats.findIndex(c => c.id === update.chat_id);
+        if (idx === -1) return prevChats;
         
-        const chatToUpdate = prev[idx];
+        const chatToUpdate = prevChats[idx];
         const isFromOtherUser = update.sender_id !== currentUserId;
         
         const updatedChat: Chat = {
@@ -75,59 +122,108 @@ export function ChatList() {
             timestamp: update.last_message_at,
             read: !isFromOtherUser
           } as MessageRead,
-          // 🔥 Обновляем unread_count ТОЛЬКО для сообщений от других
           unread_count: isFromOtherUser 
             ? (chatToUpdate.unread_count || 0) + 1 
             : (chatToUpdate.unread_count || 0)
         };
         
-        // Перемещаем наверх и сортируем
-        const filtered = prev.filter((_, i) => i !== idx);
+        const filtered = prevChats.filter((_, i) => i !== idx);
         return [updatedChat, ...filtered].sort((a, b) => {
           const timeA = a.last_message?.timestamp ? new Date(a.last_message.timestamp).getTime() : 0;
           const timeB = b.last_message?.timestamp ? new Date(b.last_message.timestamp).getTime() : 0;
           return timeB - timeA;
         });
-      });
+      };
+
+      // Обновляем основной список
+      setChats(prev => updateChatList(prev));
+      
+      // 🔥 Если есть активный поиск — обновляем и результаты
+      if (searchResults !== null) {
+        setSearchResults(prev => prev ? updateChatList(prev) : null);
+      }
     });
     
     return () => unsubscribe();
-  }, [subscribeToChatList, currentUserId]);
+  }, [subscribeToChatList, currentUserId, searchResults]);
 
-  // === 🔥 Подписка на события прочтения (обновление только unread_count) ===
+  // === 🔥 Подписка на события прочтения ===
   useEffect(() => {
-    // Подписываемся на все чаты — при получении события обновляем нужный
     const unsubscribe = subscribeToMessagesRead('*', (data) => {
-      setChats(prev => prev.map(chat => {
-        // Обновляем только если событие для этого чата И прочитал НЕ я
+      const updateUnread = (prevChats: Chat[]) => prevChats.map(chat => {
         if (data.reader_id !== currentUserId) {
           return { ...chat, unread_count: 0 };
         }
         return chat;
-      }));
+      });
+
+      setChats(prev => updateUnread(prev));
+      
+      if (searchResults !== null) {
+        setSearchResults(prev => prev ? updateUnread(prev) : null);
+      }
     });
     
     return () => unsubscribe();
-  }, [subscribeToMessagesRead, currentUserId]);
+  }, [subscribeToMessagesRead, currentUserId, searchResults]);
+
+  // === 🔥 Дебаунс поиска (300мс после последнего ввода) ===
+  useEffect(() => {
+    if (searchQuery.length < 2) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        console.log('⏳ [ChatList] Запуск поиска:', searchQuery);
+        const results = await chatAPI.searchChats(searchQuery, 20);
+        
+        console.log('📦 [ChatList] Получено результатов:', results?.length);
+        console.log('🔍 [ChatList] Первый результат:', results?.[0]);
+        
+        setSearchResults(results);
+        
+        // 🔥 Проверка: действительно ли стейт обновился?
+        setTimeout(() => {
+          console.log('🔄 [ChatList] searchResults после setState:', results?.length);
+        }, 0);
+        
+      } catch (err) {
+        console.error('❌ [ChatList] Ошибка поиска:', err);
+        setSearchResults(null);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // === Обработчик выбора чата ===
+  // 🔥 Работает и для обычного списка, и для результатов поиска
   const handleChatSelect = useCallback((chatId: number, unreadCount?: number) => {
-    // Локально сбрасываем счётчик для мгновенного отклика
     if (unreadCount && unreadCount > 0) {
-      setChats(prev => prev.map(c => 
-        c.id === chatId ? { ...c, unread_count: 0 } : c
-      ));
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, unread_count: 0 } : c));
+      if (searchResults !== null) {
+        setSearchResults(prev => prev?.map(c => c.id === chatId ? { ...c, unread_count: 0 } : c));
+      }
     }
+    
+    // 🔥 Сбрасываем поиск при переходе в чат
+    setSearchQuery('');
+    setSearchResults(null);
     
     navigate(`/chats/chat/${chatId}`);
     
-    // Уведомляем бэкенд о прочтении
     setTimeout(() => {
       if (connectionStatus === 'open') {
         markMessagesRead(chatId);
       }
     }, 100);
-  }, [navigate, markMessagesRead, connectionStatus]);
+  }, [navigate, markMessagesRead, connectionStatus, searchResults]);
 
   // === Хендлеры модалки ===
   const handleOpenModal = (mode: 'personal' | 'group') => {
@@ -136,6 +232,10 @@ export function ChatList() {
 
   const handleChatCreated = (newChat: Chat) => {
     setChats(prev => [newChat, ...prev]);
+    // 🔥 Если активен поиск — добавляем новый чат и в результаты
+    if (searchResults !== null) {
+      setSearchResults(prev => prev ? [newChat, ...prev] : null);
+    }
     navigate(`/chats/chat/${newChat.id}`);
   };
 
@@ -147,6 +247,10 @@ export function ChatList() {
     </div>
   );
 
+  // 🔥 Определяем, какие чаты показывать: результаты поиска или обычный список
+  const displayedChats = searchResults !== null ? searchResults : chats;
+  const isSearchActive = searchQuery.length >= 2;
+
   return (
     <div className={styles.container}>
       {/* Шапка с поиском */}
@@ -155,20 +259,46 @@ export function ChatList() {
           <span className={styles.searchIcon}>🔍</span>
           <input
             type="text"
-            placeholder="Поиск"
+            placeholder="Поиск чатов..."
             className={styles.searchInput}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
           />
+          {/* 🔥 Кнопка очистки поиска */}
+          {searchQuery && (
+            <button 
+              onClick={() => { setSearchQuery(''); setSearchResults(null); }}
+              className={styles.clearSearchBtn}
+              title="Очистить поиск"
+              type="button"
+            >
+              ✕
+            </button>
+          )}
         </div>
+        
+        {/* 🔥 Индикатор поиска */}
+        {isSearching && (
+          <div className={styles.searchingIndicator}>Поиск...</div>
+        )}
       </div>
 
       {/* Список чатов */}
       <div className={styles.chatList}>
-        {chats.length === 0 ? (
+        {displayedChats.length === 0 ? (
           <div className={styles.empty}>
-            <p>Нет чатов</p>
+            <p>{isSearchActive ? 'Ничего не найдено' : 'Нет чатов'}</p>
+            {/* {isSearchActive && (
+              <button 
+                onClick={() => { setSearchQuery(''); setSearchResults(null); }}
+                className={styles.clearSearchBtn}
+              >
+                Очистить поиск
+              </button>
+            )} */}
           </div>
         ) : (
-          chats.map(chat => {
+          displayedChats.map(chat => {
             const displayName = getChatTitle(chat, currentUserId);
             const lastMsg = chat.last_message;
             const lastMessageText = getChatPreviewText(chat, currentUserId);
@@ -188,7 +318,7 @@ export function ChatList() {
                 })
               : '';
               
-              const hasUnread = (chat.unread_count || 0) > 0;
+            const hasUnread = (chat.unread_count || 0) > 0;
             
             return (
               <div
@@ -242,6 +372,7 @@ export function ChatList() {
         className={styles.createBtn}
         onClick={() => handleOpenModal('personal')}
         title="Новый чат"
+        type="button"
       >
         ✎
       </button>
