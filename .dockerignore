@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Логи
+logs/
+*.log
+
+# Git и IDE
+.git/
+.idea/
+.vscode/
+
+# Frontend (не нужен бэкенду)
+frontend/node_modules/
+frontend/dist/
+
+# Docker конфиги
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Секреты
+.env
+.env.*
