@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
-import { Attachment } from '../types/messages';
+import { Attachment, Chat } from '../types';
 
 type MessageData = {
   id: number;
@@ -50,6 +50,8 @@ type MessagesReadUpdate = {
 type ChatSocketContextType = {
   subscribeToChat: (chatId: number, onMessage: (msg: MessageData) => void) => () => void;
   subscribeToChatList: (onUpdate: (update: ChatListUpdate) => void) => () => void;
+  subscribeToNewChat: (onNewChat: (chat: Chat) => void) => () => void;
+
   sendMessage: (chatId: number, text: string, client_msg_id?: string) => boolean;
   // 🔥 НОВОЕ: отправка статуса "печатает"
   sendTypingStatus: (chatId: number, isTyping: boolean) => boolean;
@@ -90,6 +92,7 @@ export function ChatSocketProvider({
   const userIdRef = useRef<number | null>(currentUserId);
   const isMountedRef = useRef(true);
   const isConnectingRef = useRef(false);
+  const newChatSubscribersRef = useRef<Set<(chat: Chat) => void>>(new Set());
   
   // Хранилища колбэков
   const chatSubscribersRef = useRef<Map<number, Set<(msg: MessageData) => void>>>(new Map());
@@ -211,7 +214,10 @@ export function ChatSocketProvider({
             typingUsersRef.current.delete(chat_id);
           }
           setTypingVersion(v => v + 1);
-        }  
+        } 
+        else if (data.type === 'new_chat') {
+          newChatSubscribersRef.current.forEach(cb => cb(data.chat as Chat));
+        }
       } catch (e) {
         console.error('WS parse error', e);
       }
@@ -439,6 +445,11 @@ export function ChatSocketProvider({
     return true;
   }, []);
 
+  const subscribeToNewChat = useCallback((onNewChat: (chat: Chat) => void) => {
+    newChatSubscribersRef.current.add(onNewChat);
+    return () => { newChatSubscribersRef.current.delete(onNewChat); };
+  }, []);
+
   const value = {
     subscribeToChat,
     subscribeToChatList,
@@ -453,6 +464,7 @@ export function ChatSocketProvider({
     markMessagesRead,
     uploadFile,
     sendAttachmentMessage,
+    subscribeToNewChat,
   };
 
   return (
